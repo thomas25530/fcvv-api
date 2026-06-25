@@ -24,12 +24,19 @@ class Vote(BaseModel):
 
 # --- NOUVELLE FONCTION : Envoyer notification ---
 def envoyer_notif_push(topic, titre, corps):
-    """
-    topic: nom de la catégorie (ex: 'U11')
-    """
+    topic = topic.strip()
     try:
+        # On définit des options spécifiques pour Android
+        android_config = messaging.AndroidConfig(
+            priority='high', # Demande au système d'afficher immédiatement
+            notification=messaging.AndroidNotification(
+                channel_id="fcvv_service_channel" # Le même que dans votre service.py
+            )
+        )
+        
         message = messaging.Message(
             notification=messaging.Notification(title=titre, body=corps),
+            android=android_config,
             topic=topic,
         )
         response = messaging.send(message)
