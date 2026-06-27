@@ -65,9 +65,15 @@ def enregistrer_vote(categorie: str, vote: Vote):
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- NOUVELLE ROUTE : Pour déclencher une notification manuellement ---
+# 1. Créez un modèle pour le corps de la requête
+class NotifRequest(BaseModel):
+    titre: str
+    corps: str
+
+# 2. Modifiez la route
 @app.post("/notifier/{categorie}")
-def envoyer_alerte(categorie: str, titre: str = "FCVV", corps: str = "Nouvelle mise à jour disponible !"):
-    res = envoyer_notif_push(categorie, titre, corps)
+def envoyer_alerte(categorie: str, payload: NotifRequest):
+    res = envoyer_notif_push(categorie, payload.titre, payload.corps)
     if res:
         return {"message": "Notification envoyée", "id": res}
     raise HTTPException(status_code=500, detail="Échec envoi notification")
