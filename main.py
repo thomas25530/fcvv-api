@@ -13,13 +13,17 @@ from typing import Optional
 
 
 # 1. Initialisation de Firebase
-firebase_config_str = os.getenv("FIREBASE_CONFIG")
-if not firebase_config_str:
-    raise Exception("La variable d'environnement FIREBASE_CONFIG n'est pas définie !")
-
-cred = credentials.Certificate(json.loads(firebase_config_str))
-firebase_admin.initialize_app(cred)
-db = firestore.client()
+try:
+    firebase_config_str = os.getenv("FIREBASE_CONFIG")
+    if not firebase_config_str:
+        print("Erreur : Variable FIREBASE_CONFIG manquante")
+    else:
+        cred = credentials.Certificate(json.loads(firebase_config_str))
+        firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        print("Firebase initialisé avec succès")
+except Exception as e:
+    print(f"Erreur critique initialisation Firebase: {e}")
 
 app = FastAPI()
 
@@ -46,14 +50,24 @@ class Message(BaseModel):
 @app.get("/chat/{categorie}")
 def get_messages(categorie: str):
     try:
-        # On cible la sous-collection "messages" dans le document de la catégorie
-        docs = db.collection("chats").document(categorie).collection("messages") \
+        # Essayer de récupérer la collection
+        query = db.collection("chats").document(categorie).collection("messages") \
             .order_by("timestamp", direction=firestore.Query.ASCENDING) \
-            .limit(50) \
-            .stream()
+            .limit(50)
         
-        return [{"id": doc.id, **doc.to_dict()} for doc in docs]
+        docs = query.stream()
+        
+        # Sécurisation des données renvoyées
+        results = []
+        for doc in docs:
+            data = doc.to_dict()
+            # Convertir le timestamp Firebase en string ISO pour Pydantic
+            if 'timestamp' in data and data['timestamp']:
+                data['timestamp'] = data['timestamp'].isoformat()
+            results.append({"id": doc.id, **data})
+        return results
     except Exception as e:
+        print(f"Erreur Firestore: {e}") # Loguez l'erreur réelle ici
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat/{categorie}")
