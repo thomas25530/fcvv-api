@@ -10,11 +10,8 @@ from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
 
-
 import requests
-from bs4 import BeautifulSoup
 import yaml
-from apscheduler.schedulers.background import BackgroundScheduler
 
 
 # 1. Initialisation de Firebase
@@ -141,123 +138,6 @@ def envoyer_alerte(categorie: str, payload: NotifRequest):
         return {"message": "Notification envoyée", "id": res}
     raise HTTPException(status_code=500, detail="Échec envoi notification")
 
-# Ajout de cette fonction pour scraper la FFF
-def scrape_fff_classement(url):
-    print(f"DEBUG [Scraping]: Tentative de scraping de {url}")
-    try:
-        # Headers renforcés pour simuler un vrai navigateur et éviter le 403
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Referer': 'https://www.fff.fr/',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1'
-        }
-        r = requests.get(url, timeout=15, headers=headers)
-        
-        print(f"DEBUG [Scraping]: Statut HTTP {r.status_code}")
-        if r.status_code != 200:
-            # Si on a toujours un 403, on affiche le début de la réponse pour comprendre
-            print(f"DEBUG [Scraping]: Erreur HTTP {r.status_code}. Contenu reçu: {r.text[:200]}")
-            return None
-
-        soup = BeautifulSoup(r.text, 'html.parser')
-        
-        # LOGS POUR DIAGNOSTIQUER SI LE SÉLECTEUR EST TOUJOURS LE BON
-        rows = soup.select('table.classement-table tbody tr')
-        print(f"DEBUG [Scraping]: {len(rows)} lignes trouvées avec 'table.classement-table'")
-        
-        if len(rows) == 0:
-            print(f"DEBUG [Scraping]: Aucune ligne trouvée. HTML (début): {r.text[:300]}...")
-            return None
-        
-        tableau_data = []
-        for row in rows:
-            cols = row.find_all('td')
-            if len(cols) > 1:
-                tableau_data.append({
-                    "rang": cols[0].text.strip(),
-                    "equipe": cols[1].text.strip(),
-                    "pts": cols[2].text.strip(),
-                    "j": cols[3].text.strip(),
-                    "g": cols[4].text.strip(),
-                    "n": cols[5].text.strip(),
-                    "p": cols[6].text.strip(),
-                    "bp": cols[8].text.strip() if len(cols) > 8 else "0",
-                    "bc": cols[9].text.strip() if len(cols) > 9 else "0",
-                    "diff": cols[11].text.strip() if len(cols) > 11 else "0"
-                })
-        return tableau_data
-        
-    except Exception as e:
-        print(f"DEBUG [Scraping]: Erreur critique sur {url} : {str(e)}")
-        return None
-
-YAML_DRIVE_URL = "https://docs.google.com/uc?export=download&id=161ngxPQz66QumHjG_us6qqyAtA0GPX2x"
-
-def job_update_classements():
-    print("DEBUG [Job]: --- DÉBUT EFFECTIF DE job_update_classements ---")
-    try:
-        # 1. Lecture du YAML
-        response = requests.get(YAML_DRIVE_URL, timeout=15)
-        config = yaml.safe_load(response.text)
-        
-        # Correction ici : on accède à 'appli' d'abord
-        appli = config.get("appli", {})
-        classements_config = appli.get("classements", [])
-        
-        print(f"DEBUG [Job]: {len(classements_config)} équipes trouvées.")
-
-        # 2. Boucle de traitement
-        for item in classements_config:
-            nom = item.get("equipe_nom")
-            url = item.get("fff_url")
-            print(f"DEBUG [Job]: Traitement de {nom}...")
-            
-            if not url:
-                print(f"DEBUG [Job]: Pas d'URL pour {nom}, on saute.")
-                continue
-            
-            data = scrape_fff_classement(url)
-            if data:
-                db.collection("classements").document(nom).set({
-                    "tableau": data,
-                    "maj": datetime.now().strftime("%d/%m/%Y %H:%M")
-                })
-                print(f"DEBUG [Job]: Succès Firestore pour {nom}.")
-            else:
-                print(f"DEBUG [Job]: Échec scraping pour {nom}.")
-                
-        print("DEBUG [Job]: --- FIN DU JOB ---")
-        
-    except Exception as e:
-        print(f"DEBUG [Job]: ERREUR FATALE DANS LE JOB : {str(e)}")
-
-# Initialisation du planificateur (tous les jours à 05h00)
-scheduler = BackgroundScheduler()
-scheduler.add_job(job_update_classements, 'cron', hour=5, minute=0)
-scheduler.start()
-
-@app.get("/classement")
-def get_classement_auto():
-    """Route appelée par l'application pour lire les données déjà en cache dans Firestore"""
-    try:
-        docs = db.collection("classements").stream()
-        return {doc.id: {"equipe_nom": doc.id, "tableau": doc.to_dict().get("tableau"), "maj": doc.to_dict().get("maj")} for doc in docs}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="Erreur lors de la récupération des classements")
-
-@app.post("/trigger-update")
-def force_update():
-    print("DEBUG: Entrée dans la route /trigger-update")
-    try:
-        # On exécute le job directement sans threading pour voir les erreurs en direct
-        job_update_classements()
-        return {"message": "Mise à jour terminée avec succès"}
-    except Exception as e:
-        print(f"DEBUG: ERREUR DANS LA ROUTE: {str(e)}")
-        return {"message": "Erreur lors de la mise à jour", "error": str(e)}
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
