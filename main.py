@@ -143,14 +143,35 @@ def envoyer_alerte(categorie: str, payload: NotifRequest):
 
 # Ajout de cette fonction pour scraper la FFF
 def scrape_fff_classement(url):
+    print(f"DEBUG: Tentative de scraping de {url}")
     try:
-        r = requests.get(url, timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
+        # Utilisation d'un User-Agent plus "standard" pour éviter les blocages de base
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        r = requests.get(url, timeout=15, headers=headers)
+        
+        print(f"DEBUG: Status Code reçu: {r.status_code}")
+        
+        # Si vous recevez une erreur (403, 404), on le saura tout de suite
+        if r.status_code != 200:
+            print(f"DEBUG: Erreur HTTP {r.status_code} sur l'URL.")
+            return None
+
+        # Affichage d'un échantillon du HTML pour voir si le tableau est bien présent
+        print(f"DEBUG: Taille du contenu HTML reçu: {len(r.text)} octets")
+        
         soup = BeautifulSoup(r.text, 'html.parser')
         
-        tableau_data = []
-        # Le sélecteur 'table' peut varier, vérifiez le code source de la page FFF
+        # On teste le sélecteur, et s'il est vide, on logue une alerte
         rows = soup.select('table.classement-table tbody tr') 
+        print(f"DEBUG: Nombre de lignes trouvées avec 'table.classement-table': {len(rows)}")
         
+        if len(rows) == 0:
+            # Si aucune ligne n'est trouvée, c'est peut-être que la structure a changé
+            # On logue le HTML pour debug (limité aux 500 premiers caractères)
+            print(f"DEBUG: HTML extrait (début): {r.text[:500]}...")
+            return None
+        
+        tableau_data = []
         for row in rows:
             cols = row.find_all('td')
             if len(cols) > 1:
@@ -162,13 +183,16 @@ def scrape_fff_classement(url):
                     "g": cols[4].text.strip(),
                     "n": cols[5].text.strip(),
                     "p": cols[6].text.strip(),
-                    "bp": cols[8].text.strip(),
-                    "bc": cols[9].text.strip(),
-                    "diff": cols[11].text.strip()
+                    "bp": cols[8].text.strip() if len(cols) > 8 else "0",
+                    "bc": cols[9].text.strip() if len(cols) > 9 else "0",
+                    "diff": cols[11].text.strip() if len(cols) > 11 else "0"
                 })
+        
+        print(f"DEBUG: Scraping réussi, {len(tableau_data)} équipes ajoutées.")
         return tableau_data
+        
     except Exception as e:
-        print(f"Erreur scraping {url}: {e}")
+        print(f"Erreur critique lors du scraping de {url}: {str(e)}")
         return None
 
 # URL de téléchargement direct de votre fichier YAML sur le Drive
