@@ -194,15 +194,13 @@ def job_update_classements():
     try:
         # 1. Lecture du YAML
         response = requests.get(YAML_DRIVE_URL, timeout=15)
-        print(f"DEBUG [Job]: Réponse Drive status={response.status_code}")
-        
         config = yaml.safe_load(response.text)
-        if not config:
-            print("DEBUG [Job]: Erreur, YAML vide ou malformé.")
-            return
-
-        classements_config = config.get("classements", [])
-        print(f"DEBUG [Job]: {len(classements_config)} équipes configurées.")
+        
+        # Correction ici : on accède à 'appli' d'abord
+        appli = config.get("appli", {})
+        classements_config = appli.get("classements", [])
+        
+        print(f"DEBUG [Job]: {len(classements_config)} équipes trouvées.")
 
         # 2. Boucle de traitement
         for item in classements_config:
