@@ -199,7 +199,7 @@ def scrape_fff_classement(url):
 YAML_DRIVE_URL = "https://docs.google.com/uc?export=download&id=161ngxPQz66QumHjG_us6qqyAtA0GPX2x"
 
 def job_update_classements():
-    print("Début de la mise à jour automatique des classements...")
+    print("DEBUG: --- DÉBUT EFFECTIF DE job_update_classements ---")
     try:
         # 1. Lecture du YAML depuis le Drive
         response = requests.get(YAML_DRIVE_URL, timeout=15)
@@ -237,12 +237,14 @@ def get_classement_auto():
 
 @app.post("/trigger-update")
 def force_update():
-    """Route pour forcer le scraping immédiatement."""
+    print("DEBUG: Entrée dans la route /trigger-update")
     try:
+        # On exécute le job directement sans threading pour voir les erreurs en direct
         job_update_classements()
-        return {"message": "Mise à jour lancée avec succès"}
+        return {"message": "Mise à jour terminée avec succès"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"DEBUG: ERREUR DANS LA ROUTE: {str(e)}")
+        return {"message": "Erreur lors de la mise à jour", "error": str(e)}
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
