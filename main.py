@@ -143,32 +143,26 @@ def envoyer_alerte(categorie: str, payload: NotifRequest):
 
 # Ajout de cette fonction pour scraper la FFF
 def scrape_fff_classement(url):
-    print(f"DEBUG: Tentative de scraping de {url}")
+    print(f"DEBUG [Scraping]: Tentative de scraping de {url}")
     try:
-        # Utilisation d'un User-Agent plus "standard" pour éviter les blocages de base
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
         r = requests.get(url, timeout=15, headers=headers)
         
-        print(f"DEBUG: Status Code reçu: {r.status_code}")
-        
-        # Si vous recevez une erreur (403, 404), on le saura tout de suite
+        print(f"DEBUG [Scraping]: Statut HTTP {r.status_code}")
         if r.status_code != 200:
-            print(f"DEBUG: Erreur HTTP {r.status_code} sur l'URL.")
             return None
 
-        # Affichage d'un échantillon du HTML pour voir si le tableau est bien présent
-        print(f"DEBUG: Taille du contenu HTML reçu: {len(r.text)} octets")
-        
         soup = BeautifulSoup(r.text, 'html.parser')
         
-        # On teste le sélecteur, et s'il est vide, on logue une alerte
-        rows = soup.select('table.classement-table tbody tr') 
-        print(f"DEBUG: Nombre de lignes trouvées avec 'table.classement-table': {len(rows)}")
+        # LOGS POUR DIAGNOSTIQUER SI LA PAGE EST VIDE OU SI LE SÉLECTEUR EST MAUVAIS
+        rows = soup.select('table.classement-table tbody tr')
+        print(f"DEBUG [Scraping]: {len(rows)} lignes trouvées avec 'table.classement-table'")
         
         if len(rows) == 0:
-            # Si aucune ligne n'est trouvée, c'est peut-être que la structure a changé
-            # On logue le HTML pour debug (limité aux 500 premiers caractères)
-            print(f"DEBUG: HTML extrait (début): {r.text[:500]}...")
+            # Affiche un extrait pour vérifier si on a bien la page FFF ou une erreur
+            print(f"DEBUG [Scraping]: Contenu HTML extrait (début): {r.text[:300]}...")
             return None
         
         tableau_data = []
@@ -187,30 +181,38 @@ def scrape_fff_classement(url):
                     "bc": cols[9].text.strip() if len(cols) > 9 else "0",
                     "diff": cols[11].text.strip() if len(cols) > 11 else "0"
                 })
-        
-        print(f"DEBUG: Scraping réussi, {len(tableau_data)} équipes ajoutées.")
         return tableau_data
         
     except Exception as e:
-        print(f"Erreur critique lors du scraping de {url}: {str(e)}")
+        print(f"DEBUG [Scraping]: Erreur critique sur {url} : {str(e)}")
         return None
 
-# URL de téléchargement direct de votre fichier YAML sur le Drive
 YAML_DRIVE_URL = "https://docs.google.com/uc?export=download&id=161ngxPQz66QumHjG_us6qqyAtA0GPX2x"
 
 def job_update_classements():
-    print("DEBUG: --- DÉBUT EFFECTIF DE job_update_classements ---")
+    print("DEBUG [Job]: --- DÉBUT EFFECTIF DE job_update_classements ---")
     try:
-        # 1. Lecture du YAML depuis le Drive
+        # 1. Lecture du YAML
         response = requests.get(YAML_DRIVE_URL, timeout=15)
+        print(f"DEBUG [Job]: Réponse Drive status={response.status_code}")
+        
         config = yaml.safe_load(response.text)
-        classements_config = config.get("classements", [])
+        if not config:
+            print("DEBUG [Job]: Erreur, YAML vide ou malformé.")
+            return
 
-        # 2. Scraping et mise à jour Firestore
+        classements_config = config.get("classements", [])
+        print(f"DEBUG [Job]: {len(classements_config)} équipes configurées.")
+
+        # 2. Boucle de traitement
         for item in classements_config:
             nom = item.get("equipe_nom")
             url = item.get("fff_url")
-            if not url: continue
+            print(f"DEBUG [Job]: Traitement de {nom}...")
+            
+            if not url:
+                print(f"DEBUG [Job]: Pas d'URL pour {nom}, on saute.")
+                continue
             
             data = scrape_fff_classement(url)
             if data:
@@ -218,8 +220,14 @@ def job_update_classements():
                     "tableau": data,
                     "maj": datetime.now().strftime("%d/%m/%Y %H:%M")
                 })
+                print(f"DEBUG [Job]: Succès Firestore pour {nom}.")
+            else:
+                print(f"DEBUG [Job]: Échec scraping pour {nom}.")
+                
+        print("DEBUG [Job]: --- FIN DU JOB ---")
+        
     except Exception as e:
-        print(f"Erreur lors du job de mise à jour : {e}")
+        print(f"DEBUG [Job]: ERREUR FATALE DANS LE JOB : {str(e)}")
 
 # Initialisation du planificateur (tous les jours à 05h00)
 scheduler = BackgroundScheduler()
