@@ -6,13 +6,8 @@ from pydantic import BaseModel
 import firebase_admin
 from firebase_admin import credentials, firestore, messaging
 
-from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
-
-import requests
-import yaml
-
 
 # 1. Initialisation de Firebase
 try:
@@ -137,7 +132,6 @@ def envoyer_alerte(categorie: str, payload: NotifRequest):
     if res:
         return {"message": "Notification envoyée", "id": res}
     raise HTTPException(status_code=500, detail="Échec envoi notification")
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
