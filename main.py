@@ -145,24 +145,31 @@ def envoyer_alerte(categorie: str, payload: NotifRequest):
 def scrape_fff_classement(url):
     print(f"DEBUG [Scraping]: Tentative de scraping de {url}")
     try:
+        # Headers renforcés pour simuler un vrai navigateur et éviter le 403
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Referer': 'https://www.fff.fr/',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
         }
         r = requests.get(url, timeout=15, headers=headers)
         
         print(f"DEBUG [Scraping]: Statut HTTP {r.status_code}")
         if r.status_code != 200:
+            # Si on a toujours un 403, on affiche le début de la réponse pour comprendre
+            print(f"DEBUG [Scraping]: Erreur HTTP {r.status_code}. Contenu reçu: {r.text[:200]}")
             return None
 
         soup = BeautifulSoup(r.text, 'html.parser')
         
-        # LOGS POUR DIAGNOSTIQUER SI LA PAGE EST VIDE OU SI LE SÉLECTEUR EST MAUVAIS
+        # LOGS POUR DIAGNOSTIQUER SI LE SÉLECTEUR EST TOUJOURS LE BON
         rows = soup.select('table.classement-table tbody tr')
         print(f"DEBUG [Scraping]: {len(rows)} lignes trouvées avec 'table.classement-table'")
         
         if len(rows) == 0:
-            # Affiche un extrait pour vérifier si on a bien la page FFF ou une erreur
-            print(f"DEBUG [Scraping]: Contenu HTML extrait (début): {r.text[:300]}...")
+            print(f"DEBUG [Scraping]: Aucune ligne trouvée. HTML (début): {r.text[:300]}...")
             return None
         
         tableau_data = []
