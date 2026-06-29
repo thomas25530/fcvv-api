@@ -3,3 +3,6 @@ uvicorn
 firebase-admin
 google-api-python-client
 requests
+beautifulsoup4
+pyyaml
+apscheduler
