@@ -2,3 +2,4 @@ fastapi
 uvicorn
 firebase-admin
 google-api-python-client
+pydantic

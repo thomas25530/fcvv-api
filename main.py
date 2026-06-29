@@ -1,11 +1,10 @@
 import os
 import json
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 import firebase_admin
 from firebase_admin import credentials, firestore, messaging
-
 from datetime import datetime
 from typing import Optional
 
@@ -24,12 +23,7 @@ except Exception as e:
 
 app = FastAPI()
 
-# --- NOUVELLE ROUTE : WARMUP ---
-@app.get("/")
-def ping():
-    """Route légère pour réveiller le serveur sans charger de données."""
-    return {"status": "ok", "message": "Server is awake"}
-
+# --- Modèles ---
 class Vote(BaseModel):
     id_sondage: str
     nom_parent: str
@@ -43,52 +37,10 @@ class Message(BaseModel):
     auteur: str
     contenu: str
     timestamp: Optional[datetime] = None
-    
-@app.get("/chat/{categorie}")
-def get_messages(categorie: str):
-    try:
-        # Cible bien la sous-collection "messages"
-        docs = db.collection("chats").document(categorie).collection("messages") \
-            .order_by("timestamp", direction=firestore.Query.ASCENDING) \
-            .limit(50) \
-            .stream()
-        
-        results = []
-        for doc in docs:
-            data = doc.to_dict()
-            # Gérer le timestamp proprement
-            ts = data.get('timestamp')
-            if ts and hasattr(ts, 'isoformat'):
-                data['timestamp'] = ts.isoformat()
-            else:
-                data['timestamp'] = datetime.utcnow().isoformat() # Fallback
-                
-            results.append({"id": doc.id, **data})
-        return results
-    except Exception as e:
-        # Si Firestore demande un index, l'erreur apparaîtra ici
-        print(f"Erreur Firestore: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/chat/{categorie}")
-def poster_message(categorie: str, message: Message):
-    try:
-        msg_data = {
-            "auteur": message.auteur,
-            "contenu": message.contenu,
-            "timestamp": firestore.SERVER_TIMESTAMP # Utilise l'heure de Google
-        }
-        # Ajout dans la sous-collection
-        db.collection("chats").document(categorie).collection("messages").add(msg_data)
-        
-        # Optionnel : Envoyer une notif FCM aux autres membres du topic
-        # envoyer_notif_push(categorie, f"Nouveau message de {message.auteur}", message.contenu)
-        
-        return {"message": "Message envoyé"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-def envoyer_notif_push(topic, titre, corps):
+# --- Fonctions utilitaires ---
+def envoyer_notif_push(topic: str, titre: str, corps: str):
+    """Fonction exécutée en arrière-plan pour envoyer la notification FCM."""
     topic = topic.strip()
     try:
         android_config = messaging.AndroidConfig(
@@ -102,16 +54,61 @@ def envoyer_notif_push(topic, titre, corps):
             android=android_config,
             topic=topic,
         )
-        return messaging.send(message)
+        messaging.send(message)
     except Exception as e:
-        print(f"Erreur envoi notif: {e}")
-        return None
+        print(f"Erreur envoi notif pour le topic {topic}: {e}")
+
+# --- Routes ---
+@app.get("/")
+def ping():
+    return {"status": "ok", "message": "Server is awake"}
+
+@app.get("/chat/{categorie}")
+def get_messages(categorie: str):
+    try:
+        docs = db.collection("chats").document(categorie).collection("messages") \
+            .order_by("timestamp", direction=firestore.Query.ASCENDING) \
+            .limit(50) \
+            .stream()
+        
+        results = []
+        for doc in docs:
+            data = doc.to_dict()
+            ts = data.get('timestamp')
+            data['timestamp'] = ts.isoformat() if ts and hasattr(ts, 'isoformat') else datetime.utcnow().isoformat()
+            results.append({"id": doc.id, **data})
+        return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/chat/{categorie}")
+def poster_message(categorie: str, message: Message, background_tasks: BackgroundTasks):
+    try:
+        msg_data = {
+            "auteur": message.auteur,
+            "contenu": message.contenu,
+            "timestamp": firestore.SERVER_TIMESTAMP
+        }
+        # 1. Ajout dans Firestore
+        db.collection("chats").document(categorie).collection("messages").add(msg_data)
+        
+        # 2. Ajout de la notification en tâche de fond
+        # On ne bloque pas la réponse API le temps que FCM réponde
+        background_tasks.add_task(
+            envoyer_notif_push, 
+            categorie, 
+            f"Nouveau message ({categorie})", 
+            f"{message.auteur}: {message.contenu}"
+        )
+        
+        return {"message": "Message envoyé avec succès"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/sondages/{categorie}")
 def get_sondages_par_categorie(categorie: str):
     try:
-        collection_name = f"sondages_{categorie}"
-        docs = db.collection(collection_name).stream()
+        docs = db.collection(f"sondages_{categorie}").stream()
         return {doc.id: doc.to_dict() for doc in docs}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -119,19 +116,15 @@ def get_sondages_par_categorie(categorie: str):
 @app.post("/voter/{categorie}")
 def enregistrer_vote(categorie: str, vote: Vote):
     try:
-        collection_name = f"sondages_{categorie}"
-        doc_ref = db.collection(collection_name).document(vote.id_sondage)
-        doc_ref.update({f'votes.{vote.nom_parent}': vote.choix})
+        db.collection(f"sondages_{categorie}").document(vote.id_sondage).update({f'votes.{vote.nom_parent}': vote.choix})
         return {"message": "Vote mis à jour"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/notifier/{categorie}")
-def envoyer_alerte(categorie: str, payload: NotifRequest):
-    res = envoyer_notif_push(categorie, payload.titre, payload.corps)
-    if res:
-        return {"message": "Notification envoyée", "id": res}
-    raise HTTPException(status_code=500, detail="Échec envoi notification")
+def envoyer_alerte(categorie: str, payload: NotifRequest, background_tasks: BackgroundTasks):
+    background_tasks.add_task(envoyer_notif_push, categorie, payload.titre, payload.corps)
+    return {"message": "Notification programmée"}
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
