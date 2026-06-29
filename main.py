@@ -50,24 +50,27 @@ class Message(BaseModel):
 @app.get("/chat/{categorie}")
 def get_messages(categorie: str):
     try:
-        # Essayer de récupérer la collection
-        query = db.collection("chats").document(categorie).collection("messages") \
+        # Cible bien la sous-collection "messages"
+        docs = db.collection("chats").document(categorie).collection("messages") \
             .order_by("timestamp", direction=firestore.Query.ASCENDING) \
-            .limit(50)
+            .limit(50) \
+            .stream()
         
-        docs = query.stream()
-        
-        # Sécurisation des données renvoyées
         results = []
         for doc in docs:
             data = doc.to_dict()
-            # Convertir le timestamp Firebase en string ISO pour Pydantic
-            if 'timestamp' in data and data['timestamp']:
-                data['timestamp'] = data['timestamp'].isoformat()
+            # Gérer le timestamp proprement
+            ts = data.get('timestamp')
+            if ts and hasattr(ts, 'isoformat'):
+                data['timestamp'] = ts.isoformat()
+            else:
+                data['timestamp'] = datetime.utcnow().isoformat() # Fallback
+                
             results.append({"id": doc.id, **data})
         return results
     except Exception as e:
-        print(f"Erreur Firestore: {e}") # Loguez l'erreur réelle ici
+        # Si Firestore demande un index, l'erreur apparaîtra ici
+        print(f"Erreur Firestore: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat/{categorie}")
@@ -134,4 +137,5 @@ def envoyer_alerte(categorie: str, payload: NotifRequest):
     raise HTTPException(status_code=500, detail="Échec envoi notification")
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=10000, reload=False)
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
