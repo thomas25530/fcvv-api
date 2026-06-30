@@ -7,6 +7,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore, messaging
 from datetime import datetime
 from typing import Optional
+from pydantic import Field
 
 # 1. Initialisation de Firebase
 try:
@@ -136,9 +137,9 @@ def verifier_si_admin(nom_parent: str):
 class SondageModel(BaseModel):
     titre: str
     date: str
-    lieu: str = "Non défini"
-    type: str = "dispo"
-    # Vous pouvez ajouter d'autres champs ici
+    heure: str
+    lieu: str
+    type: str = Field(..., pattern="^(trajet|dispo)$")
 
 @app.post("/sondages/create/{categorie}")
 def create_sondage(categorie: str, sondage: SondageModel, nom_parent: str = Header(alias="nom_parent")):
