@@ -190,6 +190,26 @@ def register_user(user: dict):
         return {"status": "created"}
     return {"status": "already_exists"}
 
+@app.put("/convocations/update/{categorie}/{match_id}")
+def update_convocations(categorie: str, match_id: str, payload: dict, nom_parent: str = Header(alias="nom_parent")):
+    if not verifier_si_admin(nom_parent):
+        raise HTTPException(status_code=403, detail="Accès refusé")
+    
+    # On enregistre tout le payload reçu (adversaire, date, lieu, joueurs, etc.)
+    # merge=True permet de créer le document s'il n'existe pas ou de mettre à jour les champs fournis
+    db.collection(f"convocations_{categorie}").document(match_id).set(payload, merge=True)
+    
+    return {"status": "updated"}
+
+@app.delete("/convocations/delete/{categorie}/{match_id}")
+def delete_convocation(categorie: str, match_id: str, nom_parent: str = Header(alias="nom_parent")):
+    if not verifier_si_admin(nom_parent):
+        raise HTTPException(status_code=403, detail="Accès refusé")
+    
+    # Supprime le document du match spécifique
+    db.collection(f"convocations_{categorie}").document(match_id).delete()
+    return {"status": "deleted"}
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
