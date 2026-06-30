@@ -1,7 +1,7 @@
 import os
 import json
 import uvicorn
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Header
 from pydantic import BaseModel
 import firebase_admin
 from firebase_admin import credentials, firestore, messaging
@@ -124,6 +124,76 @@ def enregistrer_vote(categorie: str, vote: Vote):
 def envoyer_alerte(categorie: str, payload: NotifRequest, background_tasks: BackgroundTasks):
     background_tasks.add_task(envoyer_notif_push, categorie, payload.titre, payload.corps)
     return {"message": "Notification programmée"}
+
+
+# Hypothèse : vous avez une collection "admins" ou vous vérifiez le rôle dans une collection "users"
+def verifier_si_admin(nom_parent: str):
+    # Remplacez "users" par le nom de votre collection où sont stockés les rôles
+    docs = db.collection("users").where("nom", "==", nom_parent).where("role", "==", "ADMIN").stream()
+    return any(True for _ in docs)
+
+# --- Modèle pour la mise à jour/création ---
+class SondageModel(BaseModel):
+    titre: str
+    date: str
+    lieu: str = "Non défini"
+    type: str = "dispo"
+    # Vous pouvez ajouter d'autres champs ici
+
+@app.post("/sondages/create/{categorie}")
+def create_sondage(categorie: str, sondage: SondageModel, nom_parent: str = Header(...)):
+    if not verifier_si_admin(nom_parent):
+        raise HTTPException(status_code=403, detail="Accès refusé")
+    
+    try:
+        # Note: .dict() est déprécié dans les versions récentes de Pydantic, utilisez .model_dump() si Pydantic v2
+        db.collection(f"sondages_{categorie}").add(sondage.model_dump())
+        return {"status": "created"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/sondages/update/{categorie}/{sid}")
+def update_sondage(categorie: str, sid: str, data: dict, nom_parent: str = Header(...)):
+    if not verifier_si_admin(nom_parent):
+        raise HTTPException(status_code=403, detail="Accès refusé")
+        
+    try:
+        doc_ref = db.collection(f"sondages_{categorie}").document(sid)
+        if not doc_ref.get().exists:
+            raise HTTPException(status_code=404, detail="Sondage non trouvé")
+        
+        doc_ref.update(data)
+        return {"status": "updated"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/sondages/delete/{categorie}/{sid}")
+def delete_sondage(categorie: str, sid: str, nom_parent: str = Header(...)):
+    if not verifier_si_admin(nom_parent):
+        raise HTTPException(status_code=403, detail="Accès refusé")
+            
+    try:
+        doc_ref = db.collection(f"sondages_{categorie}").document(sid)
+        if not doc_ref.get().exists:
+            raise HTTPException(status_code=404, detail="Sondage non trouvé")
+            
+        doc_ref.delete()
+        return {"status": "deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/users/register")
+def register_user(user: dict):
+    # On vérifie si l'utilisateur existe déjà
+    query = db.collection("users").where("nom", "==", user.get("nom")).stream()
+    if not any(query):
+        # S'il n'existe pas, on le crée avec le rôle PARENT
+        db.collection("users").add({
+            "nom": user.get("nom"),
+            "role": "PARENT"
+        })
+        return {"status": "created"}
+    return {"status": "already_exists"}
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
