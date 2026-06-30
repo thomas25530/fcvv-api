@@ -210,6 +210,24 @@ def delete_convocation(categorie: str, match_id: str, nom_parent: str = Header(a
     db.collection(f"convocations_{categorie}").document(match_id).delete()
     return {"status": "deleted"}
 
+@app.get("/convocations/{categorie}")
+def get_convocations(categorie: str):
+    # On récupère tous les documents de la collection
+    docs = db.collection(f"convocations_{categorie}").stream()
+    
+    # On transforme en dictionnaire {match_id: data}
+    results = {doc.id: doc.to_dict() for doc in docs}
+    
+    # Si rien n'est trouvé, ça renverra {}, ce qui est parfait pour le frontend
+    return results
+
+@app.get("/convocations/{categorie}/{match_id}")
+def get_one_convocation(categorie: str, match_id: str):
+    doc = db.collection(f"convocations_{categorie}").document(match_id).get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail="Match non trouvé")
+    return doc.to_dict()
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
