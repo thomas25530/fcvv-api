@@ -36,6 +36,7 @@ class NotifRequest(BaseModel):
 class Message(BaseModel):
     auteur: str
     contenu: str
+    role: Optional[str] = "PARENT" # Valeur par défaut
     timestamp: Optional[datetime] = None
 
 # --- Fonctions utilitaires ---
@@ -87,13 +88,11 @@ def poster_message(categorie: str, message: Message, background_tasks: Backgroun
         msg_data = {
             "auteur": message.auteur,
             "contenu": message.contenu,
+            "role": message.role, # <--- Ajout de l'enregistrement du rôle
             "timestamp": firestore.SERVER_TIMESTAMP
         }
-        # 1. Ajout dans Firestore
         db.collection("chats").document(categorie).collection("messages").add(msg_data)
         
-        # 2. Ajout de la notification en tâche de fond
-        # On ne bloque pas la réponse API le temps que FCM réponde
         background_tasks.add_task(
             envoyer_notif_push, 
             categorie, 
