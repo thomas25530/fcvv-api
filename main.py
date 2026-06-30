@@ -129,9 +129,17 @@ def envoyer_alerte(categorie: str, payload: NotifRequest, background_tasks: Back
 
 # Hypothèse : vous avez une collection "admins" ou vous vérifiez le rôle dans une collection "users"
 def verifier_si_admin(nom_parent: str):
-    # Remplacez "users" par le nom de votre collection où sont stockés les rôles
-    docs = db.collection("users").where("nom", "==", nom_parent).where("role", "==", "ADMIN").stream()
-    return any(True for _ in docs)
+    # 1. On normalise le nom comme dans register_user pour obtenir l'ID
+    id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
+    
+    # 2. Accès direct au document (beaucoup plus rapide et moins coûteux)
+    doc_ref = db.collection("users").document(id_utilisateur).get()
+    
+    # 3. Vérification de l'existence et du rôle
+    if doc_ref.exists:
+        data = doc_ref.to_dict()
+        return data.get("role") == "ADMIN"
+    return False
 
 # --- Modèle pour la mise à jour/création ---
 class SondageModel(BaseModel):
@@ -179,15 +187,22 @@ def delete_sondage(categorie: str, sid: str, nom_parent: str = Header(alias="nom
 
 @app.post("/users/register")
 def register_user(user: dict):
-    # On vérifie si l'utilisateur existe déjà
-    query = db.collection("users").where("nom", "==", user.get("nom")).stream()
-    if not any(query):
-        # S'il n'existe pas, on le crée avec le rôle PARENT
-        db.collection("users").add({
-            "nom": user.get("nom"),
+    # On récupère le nom et on le normalise pour l'ID : espace -> _, et minuscule
+    raw_nom = user.get("nom", "").strip()
+    id_utilisateur = raw_nom.replace(" ", "_").lower()
+    
+    # Référence au document avec l'ID normalisé
+    doc_ref = db.collection("users").document(id_utilisateur)
+    
+    # On vérifie si ce document existe déjà
+    if not doc_ref.get().exists:
+        # On crée le document avec l'ID normalisé
+        doc_ref.set({
+            "nom": raw_nom,      # On garde le nom original pour l'affichage
             "role": "PARENT"
         })
-        return {"status": "created"}
+        return {"status": "created", "id": id_utilisateur}
+    
     return {"status": "already_exists"}
 
 @app.put("/convocations/update/{categorie}/{match_id}")
