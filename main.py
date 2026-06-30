@@ -141,42 +141,36 @@ class SondageModel(BaseModel):
     # Vous pouvez ajouter d'autres champs ici
 
 @app.post("/sondages/create/{categorie}")
-def create_sondage(categorie: str, sondage: SondageModel, nom_parent: str = Header(...)):
+def create_sondage(categorie: str, sondage: SondageModel, nom_parent: str = Header(alias="nom_parent")):
     if not verifier_si_admin(nom_parent):
         raise HTTPException(status_code=403, detail="Accès refusé")
-    
     try:
-        # Note: .dict() est déprécié dans les versions récentes de Pydantic, utilisez .model_dump() si Pydantic v2
         db.collection(f"sondages_{categorie}").add(sondage.model_dump())
         return {"status": "created"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/sondages/update/{categorie}/{sid}")
-def update_sondage(categorie: str, sid: str, data: dict, nom_parent: str = Header(...)):
+def update_sondage(categorie: str, sid: str, data: dict, nom_parent: str = Header(alias="nom_parent")):
     if not verifier_si_admin(nom_parent):
         raise HTTPException(status_code=403, detail="Accès refusé")
-        
     try:
         doc_ref = db.collection(f"sondages_{categorie}").document(sid)
         if not doc_ref.get().exists:
             raise HTTPException(status_code=404, detail="Sondage non trouvé")
-        
         doc_ref.update(data)
         return {"status": "updated"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/sondages/delete/{categorie}/{sid}")
-def delete_sondage(categorie: str, sid: str, nom_parent: str = Header(...)):
+def delete_sondage(categorie: str, sid: str, nom_parent: str = Header(alias="nom_parent")):
     if not verifier_si_admin(nom_parent):
         raise HTTPException(status_code=403, detail="Accès refusé")
-            
     try:
         doc_ref = db.collection(f"sondages_{categorie}").document(sid)
         if not doc_ref.get().exists:
             raise HTTPException(status_code=404, detail="Sondage non trouvé")
-            
         doc_ref.delete()
         return {"status": "deleted"}
     except Exception as e:
