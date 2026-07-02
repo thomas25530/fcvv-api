@@ -243,52 +243,6 @@ def get_one_convocation(categorie: str, match_id: str):
         raise HTTPException(status_code=404, detail="Match non trouvé")
     return doc.to_dict()
 
-# 1. Modèle unique et robuste
-class TournoiNotif(BaseModel):
-    nom: str
-    annee: str = "2026" # Valeur par défaut si non fourni
-
-# 2. Route pour Nouveau Tournoi
-@app.post("/notifier/tournoi")
-def notifier_nouveau_tournoi(payload: TournoiNotif):
-    topic = "TournoiVercel"
-    titre = f"Tournoi de Vercel : nouveau tournoi {payload.annee} !"
-    corps = f"Le tournoi '{payload.nom}' est disponible dans l'application."
-    
-    envoyer_notif_push(topic, titre, corps)
-    return {"status": "notif_envoyee"}
-
-# 3. Route pour Phases Finales (Uniformisée avec le même modèle)
-@app.post("/notifier/phases-finales")
-def notifier_phases_finales(payload: TournoiNotif):
-    nom_tournoi = payload.nom
-    
-    # Normalisation de l'ID pour Firestore
-    doc_id = nom_tournoi.replace(" ", "_").lower()
-    ref = db.collection("notifications_envoyees").document(doc_id)
-    
-    # 1. Vérification de l'état
-    if ref.get().exists:
-        return {"status": "deja_envoyee"}
-    
-    # 2. Envoi de la notification
-    try:
-        envoyer_notif_push(
-            "TournoiVercel", 
-            "Tournoi de Vercel : Phase Finale !", 
-            f"Le tournoi '{nom_tournoi}' entre dans sa phase décisive. Les matchs finaux commencent !"
-        )
-    except Exception as e:
-        return {"error": f"Erreur FCM: {str(e)}"}, 500
-    
-    # 3. Marquage comme envoyé
-    ref.set({
-        "envoye": True, 
-        "nom_tournoi": nom_tournoi,
-        "timestamp": firestore.SERVER_TIMESTAMP
-    })
-    
-    return {"status": "ok"}
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
