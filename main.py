@@ -243,34 +243,27 @@ def get_one_convocation(categorie: str, match_id: str):
         raise HTTPException(status_code=404, detail="Match non trouvé")
     return doc.to_dict()
 
+# 1. Modèle unique et robuste
 class TournoiNotif(BaseModel):
     nom: str
-    annee: str
+    annee: str = "2026" # Valeur par défaut si non fourni
 
+# 2. Route pour Nouveau Tournoi
 @app.post("/notifier/tournoi")
 def notifier_nouveau_tournoi(payload: TournoiNotif):
     topic = "TournoiVercel"
-    
-    # payload est maintenant un objet, utilisez la notation par point (.)
     titre = f"Tournoi de Vercel : nouveau tournoi {payload.annee} !"
     corps = f"Le tournoi '{payload.nom}' est disponible dans l'application."
     
     envoyer_notif_push(topic, titre, corps)
     return {"status": "notif_envoyee"}
 
-
-
-
+# 3. Route pour Phases Finales (Uniformisée avec le même modèle)
 @app.post("/notifier/phases-finales")
-def notifier_phases_finales(payload: dict):
-    nom_tournoi = payload.get("nom")
+def notifier_phases_finales(payload: TournoiNotif):
+    nom_tournoi = payload.nom
     
-    if not nom_tournoi:
-        return {"error": "Nom du tournoi manquant"}, 400
-    
-    # Utilisation du nom du tournoi comme ID de document
-    # Note: Si le nom contient des caractères spéciaux, 
-    # vous devriez utiliser un .replace(" ", "_") pour l'ID Firestore
+    # Normalisation de l'ID pour Firestore
     doc_id = nom_tournoi.replace(" ", "_").lower()
     ref = db.collection("notifications_envoyees").document(doc_id)
     
@@ -279,7 +272,6 @@ def notifier_phases_finales(payload: dict):
         return {"status": "deja_envoyee"}
     
     # 2. Envoi de la notification
-    # Assurez-vous que votre fonction envoyer_notif_push gère les erreurs
     try:
         envoyer_notif_push(
             "TournoiVercel", 
