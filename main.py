@@ -243,17 +243,6 @@ def get_one_convocation(categorie: str, match_id: str):
         raise HTTPException(status_code=404, detail="Match non trouvé")
     return doc.to_dict()
 
-@app.post("/notifier/tournoi")
-def notifier_nouveau_tournoi(payload: dict):
-    # Si le client envoie 'titre' et 'corps', on les utilise directement
-    # Sinon, on construit le message à partir de 'nom' et 'annee'
-    titre = payload.get("titre") or f"Tournoi de Vercel : {payload.get('nom', 'Tournoi')}"
-    corps = payload.get("corps") or f"Le tournoi '{payload.get('nom', 'Tournoi')}' est disponible !"
-    
-    topic = "TournoiVercel"
-    
-    envoyer_notif_push(topic, titre, corps)
-    return {"status": "notif_envoyee"}
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
