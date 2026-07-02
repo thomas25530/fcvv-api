@@ -243,6 +243,59 @@ def get_one_convocation(categorie: str, match_id: str):
         raise HTTPException(status_code=404, detail="Match non trouvé")
     return doc.to_dict()
 
+@app.post("/notifier/tournoi")
+def notifier_nouveau_tournoi(payload: dict):
+    topic = "TournoiVercel"
+    nom_tournoi = payload.get("nom")
+    annee = payload.get("annee")
+    
+    # Formatage exact demandé
+    titre = f"Tournoi de Vercel : nouveau tournoi {annee} !"
+    corps = f"Le tournoi '{nom_tournoi}' est disponible dans l'application."
+    
+    envoyer_notif_push(topic, titre, corps)
+    return {"status": "notif_envoyee"}
+
+
+
+
+@app.post("/notifier/phases-finales")
+def notifier_phases_finales(payload: dict):
+    nom_tournoi = payload.get("nom")
+    
+    if not nom_tournoi:
+        return {"error": "Nom du tournoi manquant"}, 400
+    
+    # Utilisation du nom du tournoi comme ID de document
+    # Note: Si le nom contient des caractères spéciaux, 
+    # vous devriez utiliser un .replace(" ", "_") pour l'ID Firestore
+    doc_id = nom_tournoi.replace(" ", "_").lower()
+    ref = db.collection("notifications_envoyees").document(doc_id)
+    
+    # 1. Vérification de l'état
+    if ref.get().exists:
+        return {"status": "deja_envoyee"}
+    
+    # 2. Envoi de la notification
+    # Assurez-vous que votre fonction envoyer_notif_push gère les erreurs
+    try:
+        envoyer_notif_push(
+            "TournoiVercel", 
+            "Tournoi de Vercel : Phase Finale !", 
+            f"Le tournoi '{nom_tournoi}' entre dans sa phase décisive. Les matchs finaux commencent !"
+        )
+    except Exception as e:
+        return {"error": f"Erreur FCM: {str(e)}"}, 500
+    
+    # 3. Marquage comme envoyé
+    ref.set({
+        "envoye": True, 
+        "nom_tournoi": nom_tournoi,
+        "timestamp": firestore.SERVER_TIMESTAMP
+    })
+    
+    return {"status": "ok"}
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
