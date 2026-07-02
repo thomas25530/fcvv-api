@@ -243,15 +243,17 @@ def get_one_convocation(categorie: str, match_id: str):
         raise HTTPException(status_code=404, detail="Match non trouvé")
     return doc.to_dict()
 
+class TournoiNotif(BaseModel):
+    nom: str
+    annee: str
+
 @app.post("/notifier/tournoi")
-def notifier_nouveau_tournoi(payload: dict):
+def notifier_nouveau_tournoi(payload: TournoiNotif):
     topic = "TournoiVercel"
-    nom_tournoi = payload.get("nom")
-    annee = payload.get("annee")
     
-    # Formatage exact demandé
-    titre = f"Tournoi de Vercel : nouveau tournoi {annee} !"
-    corps = f"Le tournoi '{nom_tournoi}' est disponible dans l'application."
+    # payload est maintenant un objet, utilisez la notation par point (.)
+    titre = f"Tournoi de Vercel : nouveau tournoi {payload.annee} !"
+    corps = f"Le tournoi '{payload.nom}' est disponible dans l'application."
     
     envoyer_notif_push(topic, titre, corps)
     return {"status": "notif_envoyee"}
