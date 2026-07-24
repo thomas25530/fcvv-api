@@ -42,21 +42,44 @@ class Message(BaseModel):
 
 # --- Fonctions utilitaires ---
 def envoyer_notif_push(topic: str, titre: str, corps: str):
-    """Fonction exécutée en arrière-plan pour envoyer la notification FCM."""
+    """Fonction exécutée en arrière-plan pour envoyer la notification FCM (Android + iOS)."""
     topic = topic.strip()
     try:
+        # --- Config Android ---
         android_config = messaging.AndroidConfig(
             priority='high',
             notification=messaging.AndroidNotification(
-                channel_id="fcvv_service_channel"
+                channel_id="fcvv_high_priority_v1",
+                notification_priority='max',
+                default_sound=True,
+                default_vibrate_timings=True
             )
         )
+        # --- Config iOS (APNs) ---
+        apns_config = messaging.APNSConfig(
+            headers={
+                'apns-priority': '10',  # 10 = Distribution immédiate (High priority)
+            },
+            payload=messaging.APNSPayload(
+                aps=messaging.Aps(
+                    alert=messaging.ApsAlert(
+                        title=titre,
+                        body=corps
+                    ),
+                    sound='default',  # Active le son sur iOS
+                    badge=1,          # Ajoute la pastille rouge sur l'icône de l'application
+                )
+            )
+        )
+        # --- Assemblage du Message FCM ---
         message = messaging.Message(
             notification=messaging.Notification(title=titre, body=corps),
             android=android_config,
+            apns=apns_config,          # 👈 Ajout de la configuration iOS
             topic=topic,
         )
         messaging.send(message)
+        print(f"[FCM API] Notification envoyee avec succes au topic {topic}")
     except Exception as e:
         print(f"Erreur envoi notif pour le topic {topic}: {e}")
 
