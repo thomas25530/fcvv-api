@@ -58,7 +58,8 @@ def envoyer_notif_push(topic: str, titre: str, corps: str):
         # --- Config iOS (APNs) ---
         apns_config = messaging.APNSConfig(
             headers={
-                'apns-priority': '10',  # 10 = Distribution immédiate (High priority)
+                "apns-priority": "10",
+                "apns-push-type": "alert"
             },
             payload=messaging.APNSPayload(
                 aps=messaging.Aps(
@@ -66,8 +67,8 @@ def envoyer_notif_push(topic: str, titre: str, corps: str):
                         title=titre,
                         body=corps
                     ),
-                    sound='default',  # Active le son sur iOS
-                    badge=1,          # Ajoute la pastille rouge sur l'icône de l'application
+                    sound="default",
+                    badge=1,
                 )
             )
         )
