@@ -42,24 +42,20 @@ class Message(BaseModel):
 
 # --- Fonctions utilitaires ---
 def envoyer_notif_push(topic: str, titre: str, corps: str):
-    """Fonction exécutée en arrière-plan pour envoyer la notification FCM (Android + iOS)."""
     topic = topic.strip()
+
     try:
-        # --- Config Android ---
         android_config = messaging.AndroidConfig(
             priority='high',
             notification=messaging.AndroidNotification(
                 channel_id="fcvv_high_priority_v1",
-                notification_priority='max',
-                default_sound=True,
-                default_vibrate_timings=True
+                sound="default"
             )
         )
-        # --- Config iOS (APNs) ---
+
         apns_config = messaging.APNSConfig(
             headers={
-                "apns-priority": "10",
-                "apns-push-type": "alert"
+                "apns-priority": "10"
             },
             payload=messaging.APNSPayload(
                 aps=messaging.Aps(
@@ -67,22 +63,27 @@ def envoyer_notif_push(topic: str, titre: str, corps: str):
                         title=titre,
                         body=corps
                     ),
-                    sound="default",
-                    badge=1,
+                    sound="default"
                 )
             )
         )
-        # --- Assemblage du Message FCM ---
+
         message = messaging.Message(
-            notification=messaging.Notification(title=titre, body=corps),
+            notification=messaging.Notification(
+                title=titre,
+                body=corps
+            ),
             android=android_config,
-            apns=apns_config,          # 👈 Ajout de la configuration iOS
-            topic=topic,
+            apns=apns_config,
+            topic=topic
         )
-        messaging.send(message)
-        print(f"[FCM API] Notification envoyee avec succes au topic {topic}")
+
+        response = messaging.send(message)
+
+        print(f"[FCM API] envoye : {response}")
+
     except Exception as e:
-        print(f"Erreur envoi notif pour le topic {topic}: {e}")
+        print(f"[FCM ERROR] {e}")
 
 # --- Routes ---
 @app.get("/")
