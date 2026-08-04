@@ -91,7 +91,10 @@ def ping():
     return {"status": "ok", "message": "Server is awake"}
 
 @app.get("/chat/{categorie}")
-def get_messages(categorie: str):
+def get_messages(categorie: str, nom_parent: str = Header(alias="nom_parent")):
+    if verifier_si_exclu(nom_parent):
+        raise HTTPException(status_code=403, detail="Acces refuse : compte exclu")
+
     try:
         docs = db.collection("chats").document(categorie).collection("messages") \
             .order_by("timestamp", direction=firestore.Query.ASCENDING) \
@@ -110,11 +113,15 @@ def get_messages(categorie: str):
 
 @app.post("/chat/{categorie}")
 def poster_message(categorie: str, message: Message, background_tasks: BackgroundTasks):
+    # 'message.auteur' contient le nom du parent
+    if verifier_si_exclu(message.auteur):
+        raise HTTPException(status_code=403, detail="Action interdite : compte exclu")
+
     try:
         msg_data = {
             "auteur": message.auteur,
             "contenu": message.contenu,
-            "role": message.role, # <--- Ajout de l'enregistrement du rôle
+            "role": message.role,
             "timestamp": firestore.SERVER_TIMESTAMP
         }
         db.collection("chats").document(categorie).collection("messages").add(msg_data)
@@ -131,7 +138,10 @@ def poster_message(categorie: str, message: Message, background_tasks: Backgroun
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/sondages/{categorie}")
-def get_sondages_par_categorie(categorie: str):
+def get_sondages_par_categorie(categorie: str, nom_parent: str = Header(alias="nom_parent")):
+    if verifier_si_exclu(nom_parent):
+        raise HTTPException(status_code=403, detail="Accès refusé : compte exclu")
+
     try:
         docs = db.collection(f"sondages_{categorie}").stream()
         return {doc.id: doc.to_dict() for doc in docs}
@@ -140,6 +150,9 @@ def get_sondages_par_categorie(categorie: str):
 
 @app.post("/voter/{categorie}")
 def enregistrer_vote(categorie: str, vote: Vote):
+    if verifier_si_exclu(vote.nom_parent):
+        raise HTTPException(status_code=403, detail="Action interdite : compte exclu")
+
     try:
         db.collection(f"sondages_{categorie}").document(vote.id_sondage).update({f'votes.{vote.nom_parent}': vote.choix})
         return {"message": "Vote mis à jour"}
@@ -153,18 +166,22 @@ def envoyer_alerte(categorie: str, payload: NotifRequest, background_tasks: Back
 
 
 # Hypothèse : vous avez une collection "admins" ou vous vérifiez le rôle dans une collection "users"
-def verifier_si_admin(nom_parent: str):
-    # 1. On normalise le nom comme dans register_user pour obtenir l'ID
+def obtenir_role_utilisateur(nom_parent: str) -> Optional[str]:
+    if not nom_parent:
+        return None
     id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
-    
-    # 2. Accès direct au document (beaucoup plus rapide et moins coûteux)
     doc_ref = db.collection("users").document(id_utilisateur).get()
     
-    # 3. Vérification de l'existence et du rôle
     if doc_ref.exists:
         data = doc_ref.to_dict()
-        return data.get("role") == "ADMIN"
-    return False
+        return data.get("role")
+    return None
+
+def verifier_si_admin(nom_parent: str) -> bool:
+    return obtenir_role_utilisateur(nom_parent) == "ADMIN"
+
+def verifier_si_exclu(nom_parent: str) -> bool:
+    return obtenir_role_utilisateur(nom_parent) == "EXCLU"
 
 # --- Modèle pour la mise à jour/création ---
 class SondageModel(BaseModel):
