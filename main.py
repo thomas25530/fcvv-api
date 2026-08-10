@@ -1,293 +1,366 @@
-import os
 import json
-import uvicorn
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Header
-from pydantic import BaseModel
-import firebase_admin
-from firebase_admin import credentials, firestore, messaging
+import os
 from datetime import datetime
 from typing import Optional
-from pydantic import Field
+
+import firebase_admin
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
+from firebase_admin import credentials, firestore, messaging
+from pydantic import BaseModel, Field
+import uvicorn
 
 # 1. Initialisation de Firebase
 try:
-    firebase_config_str = os.getenv("FIREBASE_CONFIG")
-    if not firebase_config_str:
-        print("Erreur : Variable FIREBASE_CONFIG manquante")
-    else:
-        cred = credentials.Certificate(json.loads(firebase_config_str))
-        firebase_admin.initialize_app(cred)
-        db = firestore.client()
-        print("Firebase initialisé avec succès")
+  firebase_config_str = os.getenv("FIREBASE_CONFIG")
+  if not firebase_config_str:
+    print("Erreur : Variable FIREBASE_CONFIG manquante")
+  else:
+    cred = credentials.Certificate(json.loads(firebase_config_str))
+    firebase_admin.initialize_app(cred)
+    db = firestore.client()
+    print("Firebase initialisé avec succès")
 except Exception as e:
-    print(f"Erreur critique initialisation Firebase: {e}")
+  print(f"Erreur critique initialisation Firebase: {e}")
 
 app = FastAPI()
 
+
 # --- Modèles ---
 class Vote(BaseModel):
-    id_sondage: str
-    nom_parent: str
-    choix: str 
+  id_sondage: str
+  nom_parent: str
+  choix: str
+
 
 class NotifRequest(BaseModel):
-    titre: str
-    corps: str
+  titre: str
+  corps: str
+
 
 class Message(BaseModel):
-    auteur: str
-    contenu: str
-    role: Optional[str] = "PARENT" # Valeur par défaut
-    timestamp: Optional[datetime] = None
+  auteur: str
+  contenu: str
+  role: Optional[str] = "PARENT"  # Valeur par défaut
+  timestamp: Optional[datetime] = None
+
+
+class SondageModel(BaseModel):
+  titre: str
+  date: str
+  heure: str
+  lieu: str
+  type: str = Field(..., pattern="^(trajet|dispo)$")
+
 
 # --- Fonctions utilitaires ---
 def envoyer_notif_push(topic: str, titre: str, corps: str):
-    topic = topic.strip()
+  topic = topic.strip()
 
-    try:
-        android_config = messaging.AndroidConfig(
-            priority='high',
-            notification=messaging.AndroidNotification(
-                icon="ic_notification",  # <-- Forcer l'icône blanche transparente
-                color="#1E3A8A",
-                channel_id="fcvv_high_priority_v2",
-                sound="default"
+  try:
+    android_config = messaging.AndroidConfig(
+        priority="high",
+        notification=messaging.AndroidNotification(
+            icon="ic_notification",
+            color="#1E3A8A",
+            channel_id="fcvv_high_priority_v2",
+            sound="default",
+        ),
+    )
+
+    apns_config = messaging.APNSConfig(
+        headers={"apns-priority": "10"},
+        payload=messaging.APNSPayload(
+            aps=messaging.Aps(
+                alert=messaging.ApsAlert(title=titre, body=corps),
+                sound="default",
             )
-        )
+        ),
+    )
 
-        apns_config = messaging.APNSConfig(
-            headers={
-                "apns-priority": "10"
-            },
-            payload=messaging.APNSPayload(
-                aps=messaging.Aps(
-                    alert=messaging.ApsAlert(
-                        title=titre,
-                        body=corps
-                    ),
-                    sound="default"
-                )
-            )
-        )
+    message = messaging.Message(
+        notification=messaging.Notification(title=titre, body=corps),
+        android=android_config,
+        apns=apns_config,
+        topic=topic,
+    )
 
-        message = messaging.Message(
-            notification=messaging.Notification(
-                title=titre,
-                body=corps
-            ),
-            android=android_config,
-            apns=apns_config,
-            topic=topic
-        )
+    response = messaging.send(message)
+    print(f"[FCM API] envoyé : {response}")
 
-        response = messaging.send(message)
+  except Exception as e:
+    print(f"[FCM ERROR] {e}")
 
-        print(f"[FCM API] envoye : {response}")
 
-    except Exception as e:
-        print(f"[FCM ERROR] {e}")
+def obtenir_role_utilisateur(nom_parent: str) -> Optional[str]:
+  if not nom_parent:
+    return None
+  id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
+  doc_ref = db.collection("users").document(id_utilisateur).get()
+
+  if doc_ref.exists:
+    data = doc_ref.to_dict()
+    return data.get("role")
+  return None
+
+
+def verifier_si_admin(nom_parent: str) -> bool:
+  return obtenir_role_utilisateur(nom_parent) == "ADMIN"
+
+
+def verifier_si_exclu(nom_parent: str) -> bool:
+  return obtenir_role_utilisateur(nom_parent) == "EXCLU"
+
 
 # --- Routes ---
 @app.get("/")
 def ping():
-    return {"status": "ok", "message": "Server is awake"}
+  return {"status": "ok", "message": "Server is awake"}
+
 
 @app.get("/chat/{categorie}")
-def get_messages(categorie: str, nom_parent: str = Header(alias="nom_parent")):
-    if verifier_si_exclu(nom_parent):
-        raise HTTPException(status_code=403, detail="Acces refuse : compte exclu")
+def get_messages(
+    categorie: str, nom_parent: str = Header(alias="nom_parent")
+):
+  if verifier_si_exclu(nom_parent):
+    raise HTTPException(status_code=403, detail="Accès refusé : compte exclu")
 
-    try:
-        docs = db.collection("chats").document(categorie).collection("messages") \
-            .order_by("timestamp", direction=firestore.Query.ASCENDING) \
-            .limit(50) \
-            .stream()
-        
-        results = []
-        for doc in docs:
-            data = doc.to_dict()
-            ts = data.get('timestamp')
-            data['timestamp'] = ts.isoformat() if ts and hasattr(ts, 'isoformat') else datetime.utcnow().isoformat()
-            results.append({"id": doc.id, **data})
-        return results
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+  try:
+    docs = (
+        db.collection("chats")
+        .document(categorie)
+        .collection("messages")
+        .order_by("timestamp", direction=firestore.Query.ASCENDING)
+        .limit(50)
+        .stream()
+    )
+
+    results = []
+    for doc in docs:
+      data = doc.to_dict()
+      ts = data.get("timestamp")
+      data["timestamp"] = (
+          ts.isoformat()
+          if ts and hasattr(ts, "isoformat")
+          else datetime.utcnow().isoformat()
+      )
+      results.append({"id": doc.id, **data})
+    return results
+  except Exception as e:
+    raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/chat/{categorie}")
-def poster_message(categorie: str, message: Message, background_tasks: BackgroundTasks):
-    # 'message.auteur' contient le nom du parent
-    if verifier_si_exclu(message.auteur):
-        raise HTTPException(status_code=403, detail="Action interdite : compte exclu")
+def poster_message(
+    categorie: str, message: Message, background_tasks: BackgroundTasks
+):
+  if verifier_si_exclu(message.auteur):
+    raise HTTPException(
+        status_code=403, detail="Action interdite : compte exclu"
+    )
 
-    try:
-        msg_data = {
-            "auteur": message.auteur,
-            "contenu": message.contenu,
-            "role": message.role,
-            "timestamp": firestore.SERVER_TIMESTAMP
-        }
-        db.collection("chats").document(categorie).collection("messages").add(msg_data)
-        
-        background_tasks.add_task(
-            envoyer_notif_push, 
-            categorie, 
-            f"Nouveau message ({categorie})", 
-            f"{message.auteur}: {message.contenu}"
-        )
-        
-        return {"message": "Message envoyé avec succès"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+  try:
+    msg_data = {
+        "auteur": message.auteur,
+        "contenu": message.contenu,
+        "role": message.role,
+        "timestamp": firestore.SERVER_TIMESTAMP,
+    }
+    db.collection("chats").document(categorie).collection("messages").add(
+        msg_data
+    )
+
+    background_tasks.add_task(
+        envoyer_notif_push,
+        categorie,
+        f"FCVV - Nouveau message ({categorie})",
+        f"{message.auteur}: {message.contenu}",
+    )
+
+    return {"message": "Message envoyé avec succès"}
+  except Exception as e:
+    raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/sondages/{categorie}")
-def get_sondages_par_categorie(categorie: str, nom_parent: str = Header(alias="nom_parent")):
-    if verifier_si_exclu(nom_parent):
-        raise HTTPException(status_code=403, detail="Accès refusé : compte exclu")
+def get_sondages_par_categorie(
+    categorie: str, nom_parent: str = Header(alias="nom_parent")
+):
+  if verifier_si_exclu(nom_parent):
+    raise HTTPException(status_code=403, detail="Accès refusé : compte exclu")
 
-    try:
-        docs = db.collection(f"sondages_{categorie}").stream()
-        return {doc.id: doc.to_dict() for doc in docs}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+  try:
+    docs = db.collection(f"sondages_{categorie}").stream()
+    return {doc.id: doc.to_dict() for doc in docs}
+  except Exception as e:
+    raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/voter/{categorie}")
 def enregistrer_vote(categorie: str, vote: Vote):
-    if verifier_si_exclu(vote.nom_parent):
-        raise HTTPException(status_code=403, detail="Action interdite : compte exclu")
+  if verifier_si_exclu(vote.nom_parent):
+    raise HTTPException(
+        status_code=403, detail="Action interdite : compte exclu"
+    )
 
-    try:
-        db.collection(f"sondages_{categorie}").document(vote.id_sondage).update({f'votes.{vote.nom_parent}': vote.choix})
-        return {"message": "Vote mis à jour"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+  try:
+    db.collection(f"sondages_{categorie}").document(vote.id_sondage).update(
+        {f"votes.{vote.nom_parent}": vote.choix}
+    )
+    return {"message": "Vote mis à jour"}
+  except Exception as e:
+    raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/notifier/{categorie}")
-def envoyer_alerte(categorie: str, payload: NotifRequest, background_tasks: BackgroundTasks):
-    background_tasks.add_task(envoyer_notif_push, categorie, payload.titre, payload.corps)
-    return {"message": "Notification programmée"}
+def envoyer_alerte(
+    categorie: str, payload: NotifRequest, background_tasks: BackgroundTasks
+):
+  background_tasks.add_task(
+      envoyer_notif_push, categorie, payload.titre, payload.corps
+  )
+  return {"message": "Notification programmée"}
 
 
-# Hypothèse : vous avez une collection "admins" ou vous vérifiez le rôle dans une collection "users"
-def obtenir_role_utilisateur(nom_parent: str) -> Optional[str]:
-    if not nom_parent:
-        return None
-    id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
-    doc_ref = db.collection("users").document(id_utilisateur).get()
-    
-    if doc_ref.exists:
-        data = doc_ref.to_dict()
-        return data.get("role")
-    return None
-
-def verifier_si_admin(nom_parent: str) -> bool:
-    return obtenir_role_utilisateur(nom_parent) == "ADMIN"
-
-def verifier_si_exclu(nom_parent: str) -> bool:
-    return obtenir_role_utilisateur(nom_parent) == "EXCLU"
-
-# --- Modèle pour la mise à jour/création ---
-class SondageModel(BaseModel):
-    titre: str
-    date: str
-    heure: str
-    lieu: str
-    type: str = Field(..., pattern="^(trajet|dispo)$")
-
+# --- SONDAGES (CRUD + NOTIF AUTOMATIQUE) ---
 @app.post("/sondages/create/{categorie}")
-def create_sondage(categorie: str, sondage: SondageModel, nom_parent: str = Header(alias="nom_parent")):
-    if not verifier_si_admin(nom_parent):
-        raise HTTPException(status_code=403, detail="Accès refusé")
-    try:
-        db.collection(f"sondages_{categorie}").add(sondage.model_dump())
-        return {"status": "created"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+def create_sondage(
+    categorie: str,
+    sondage: SondageModel,
+    background_tasks: BackgroundTasks,
+    nom_parent: str = Header(alias="nom_parent"),
+):
+  if not verifier_si_admin(nom_parent):
+    raise HTTPException(status_code=403, detail="Accès refusé")
+  try:
+    db.collection(f"sondages_{categorie}").add(sondage.model_dump())
+
+    # Notification push automatique
+    background_tasks.add_task(
+        envoyer_notif_push,
+        categorie,
+        f"FCVV - Nouveau sondage ({categorie})",
+        f"Sondage : {sondage.titre}",
+    )
+
+    return {"status": "created"}
+  except Exception as e:
+    raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.put("/sondages/update/{categorie}/{sid}")
-def update_sondage(categorie: str, sid: str, data: dict, nom_parent: str = Header(alias="nom_parent")):
-    if not verifier_si_admin(nom_parent):
-        raise HTTPException(status_code=403, detail="Accès refusé")
-    try:
-        doc_ref = db.collection(f"sondages_{categorie}").document(sid)
-        if not doc_ref.get().exists:
-            raise HTTPException(status_code=404, detail="Sondage non trouvé")
-        doc_ref.update(data)
-        return {"status": "updated"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+def update_sondage(
+    categorie: str,
+    sid: str,
+    data: dict,
+    nom_parent: str = Header(alias="nom_parent"),
+):
+  if not verifier_si_admin(nom_parent):
+    raise HTTPException(status_code=403, detail="Accès refusé")
+  try:
+    doc_ref = db.collection(f"sondages_{categorie}").document(sid)
+    if not doc_ref.get().exists:
+      raise HTTPException(status_code=404, detail="Sondage non trouvé")
+    doc_ref.update(data)
+    return {"status": "updated"}
+  except Exception as e:
+    raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.delete("/sondages/delete/{categorie}/{sid}")
-def delete_sondage(categorie: str, sid: str, nom_parent: str = Header(alias="nom_parent")):
-    if not verifier_si_admin(nom_parent):
-        raise HTTPException(status_code=403, detail="Accès refusé")
-    try:
-        doc_ref = db.collection(f"sondages_{categorie}").document(sid)
-        if not doc_ref.get().exists:
-            raise HTTPException(status_code=404, detail="Sondage non trouvé")
-        doc_ref.delete()
-        return {"status": "deleted"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+def delete_sondage(
+    categorie: str, sid: str, nom_parent: str = Header(alias="nom_parent")
+):
+  if not verifier_si_admin(nom_parent):
+    raise HTTPException(status_code=403, detail="Accès refusé")
+  try:
+    doc_ref = db.collection(f"sondages_{categorie}").document(sid)
+    if not doc_ref.get().exists:
+      raise HTTPException(status_code=404, detail="Sondage non trouvé")
+    doc_ref.delete()
+    return {"status": "deleted"}
+  except Exception as e:
+    raise HTTPException(status_code=500, detail=str(e))
 
+
+# --- USERS ---
 @app.post("/users/register")
 def register_user(user: dict):
-    # On récupère le nom et on le normalise pour l'ID : espace -> _, et minuscule
-    raw_nom = user.get("nom", "").strip()
-    id_utilisateur = raw_nom.replace(" ", "_").lower()
-    
-    # Référence au document avec l'ID normalisé
-    doc_ref = db.collection("users").document(id_utilisateur)
-    
-    # On vérifie si ce document existe déjà
-    if not doc_ref.get().exists:
-        # On crée le document avec l'ID normalisé
-        doc_ref.set({
-            "nom": raw_nom,      # On garde le nom original pour l'affichage
-            "role": "PARENT"
-        })
-        return {"status": "created", "id": id_utilisateur}
-    
-    return {"status": "already_exists"}
+  raw_nom = user.get("nom", "").strip()
+  id_utilisateur = raw_nom.replace(" ", "_").lower()
 
+  doc_ref = db.collection("users").document(id_utilisateur)
+
+  if not doc_ref.get().exists:
+    doc_ref.set({"nom": raw_nom, "role": "PARENT"})
+    return {"status": "created", "id": id_utilisateur}
+
+  return {"status": "already_exists"}
+
+
+# --- CONVOCATIONS (CRUD + NOTIF AUTOMATIQUE) ---
 @app.put("/convocations/update/{categorie}/{match_id}")
-def update_convocations(categorie: str, match_id: str, payload: dict, nom_parent: str = Header(alias="nom_parent")):
-    if not verifier_si_admin(nom_parent):
-        raise HTTPException(status_code=403, detail="Accès refusé")
-    
-    # On enregistre tout le payload reçu (adversaire, date, lieu, joueurs, etc.)
-    # merge=True permet de créer le document s'il n'existe pas ou de mettre à jour les champs fournis
-    db.collection(f"convocations_{categorie}").document(match_id).set(payload, merge=True)
-    
+def update_convocations(
+    categorie: str,
+    match_id: str,
+    payload: dict,
+    background_tasks: BackgroundTasks,
+    nom_parent: str = Header(alias="nom_parent"),
+):
+  if not verifier_si_admin(nom_parent):
+    raise HTTPException(status_code=403, detail="Accès refusé")
+
+  try:
+    db.collection(f"convocations_{categorie}").document(match_id).set(
+        payload, merge=True
+    )
+
+    # Notification push automatique pour convocation
+    adversaire = payload.get("adversaire", match_id)
+    date_match = payload.get("date", "")
+    corps_notif = (
+        f"Convocation disponible pour {adversaire} ({date_match})".strip()
+    )
+
+    background_tasks.add_task(
+        envoyer_notif_push,
+        categorie,
+        f"FCVV - Nouvelle Convocation ({categorie})",
+        corps_notif,
+    )
+
     return {"status": "updated"}
+  except Exception as e:
+    raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.delete("/convocations/delete/{categorie}/{match_id}")
-def delete_convocation(categorie: str, match_id: str, nom_parent: str = Header(alias="nom_parent")):
-    if not verifier_si_admin(nom_parent):
-        raise HTTPException(status_code=403, detail="Accès refusé")
-    
-    # Supprime le document du match spécifique
+def delete_convocation(
+    categorie: str, match_id: str, nom_parent: str = Header(alias="nom_parent")
+):
+  if not verifier_si_admin(nom_parent):
+    raise HTTPException(status_code=403, detail="Accès refusé")
+
+  try:
     db.collection(f"convocations_{categorie}").document(match_id).delete()
     return {"status": "deleted"}
+  except Exception as e:
+    raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/convocations/{categorie}")
 def get_convocations(categorie: str):
-    # On récupère tous les documents de la collection
-    docs = db.collection(f"convocations_{categorie}").stream()
-    
-    # On transforme en dictionnaire {match_id: data}
-    results = {doc.id: doc.to_dict() for doc in docs}
-    
-    # Si rien n'est trouvé, ça renverra {}, ce qui est parfait pour le frontend
-    return results
+  docs = db.collection(f"convocations_{categorie}").stream()
+  return {doc.id: doc.to_dict() for doc in docs}
+
 
 @app.get("/convocations/{categorie}/{match_id}")
 def get_one_convocation(categorie: str, match_id: str):
-    doc = db.collection(f"convocations_{categorie}").document(match_id).get()
-    if not doc.exists:
-        raise HTTPException(status_code=404, detail="Match non trouvé")
-    return doc.to_dict()
+  doc = db.collection(f"convocations_{categorie}").document(match_id).get()
+  if not doc.exists:
+    raise HTTPException(status_code=404, detail="Match non trouvé")
+  return doc.to_dict()
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+  port = int(os.environ.get("PORT", 10000))
+  uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
