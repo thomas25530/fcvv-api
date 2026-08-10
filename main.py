@@ -48,7 +48,9 @@ def envoyer_notif_push(topic: str, titre: str, corps: str):
         android_config = messaging.AndroidConfig(
             priority='high',
             notification=messaging.AndroidNotification(
-                channel_id="fcvv_high_priority_v1",
+                icon="ic_notification",  # <-- Forcer l'icône blanche transparente
+                color="#1E3A8A",
+                channel_id="fcvv_high_priority_v2",
                 sound="default"
             )
         )
