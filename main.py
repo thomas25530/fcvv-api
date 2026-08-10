@@ -318,7 +318,7 @@ def update_convocations(
     adversaire = payload.get("adversaire", match_id)
     date_match = payload.get("date", "")
     corps_notif = (
-        f"Convocation disponible pour {adversaire} ({date_match})".strip()
+        f"Convocation disponible contre {adversaire} ({date_match})".strip()
     )
 
     background_tasks.add_task(
