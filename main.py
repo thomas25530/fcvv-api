@@ -302,6 +302,7 @@ def register_user(user: dict):
 
 
 # --- CONVOCATIONS & ÉVÉNEMENTS (CRUD + NOTIF AUTOMATIQUE) ---
+# --- CONVOCATIONS & ÉVÉNEMENTS (CRUD + NOTIF AUTOMATIQUE) ---
 @app.put("/convocations/update/{categorie}/{match_id}")
 def update_convocations(
     categorie: str,
@@ -315,26 +316,37 @@ def update_convocations(
 
   try:
     type_evt = payload.get("type", "EVENEMENT").upper()
-    date_brute = payload.get("date", "").replace("/", "-")  # Nettoyage de la date pour l'ID
+    date_brute = payload.get("date", "").replace("/", "-")  # Nettoyage de la date
 
-    # Génération d'un nom de document propre et lisible si c'est une création
-    if not match_id or match_id == "Nouvel événement" or match_id.strip() == "":
+    # SOLUTION : On force la création d'un ID propre et lisible si :
+    # 1. match_id est vide, "Nouvel événement"
+    # 2. OU si le match_id ne correspond pas au type actuel (ex: on était sur un match mais on enregistre un entrainement)
+    est_un_nouveau = not match_id or match_id == "Nouvel événement" or match_id.strip() == ""
+    type_incoherent = (type_evt == "MATCH" and not match_id.startswith("match_")) or \
+                      (type_evt == "ENTRAINEMENT" and not match_id.startswith("entrainement_"))
+
+    if est_un_nouveau or type_incoherent:
       if type_evt == "MATCH":
         adversaire = payload.get("adversaire", "inconnu").strip().replace(" ", "_").lower()
-        heure_rdv = payload.get("heure_rdv", "").replace(":", "h")
-        match_id = f"match_{adversaire}_{date_brute}_{heure_rdv}".strip("_")
+        heure_rdv = payload.get("heure_rdv", "").replace(":", "h") or "00h00"
+        nouveau_match_id = f"match_{adversaire}_{date_brute}_{heure_rdv}".strip("_")
       elif type_evt == "ENTRAINEMENT":
-        heure_ent = payload.get("heure", payload.get("heure_rdv", "")).replace(":", "h")
-        match_id = f"entrainement_{date_brute}_{heure_ent}".strip("_")
+        heure_ent = payload.get("heure", payload.get("heure_rdv", "")).replace(":", "h") or "00h00"
+        nouveau_match_id = f"entrainement_{date_brute}_{heure_ent}".strip("_")
       else:
         titre_evt = payload.get("titre", "evt").strip().replace(" ", "_").lower()
-        match_id = f"evt_{titre_evt}_{date_brute}".strip("_")
-    else:
-      # Si on modifie un document existant, on supprime l'ancien s'il portait un nom temporaire ou s'il a changé
-      old_doc_ref = db.collection(f"convocations_{categorie}").document(match_id)
-      # On effectue la mise à jour sur le nouveau ou l'ancien ID
-      pass
+        nouveau_match_id = f"evt_{titre_evt}_{date_brute}".strip("_")
+      
+      # Si on a changé de type ou créé un nouveau, on supprime l'ancien document s'il existait sous l'ancien nom obsolète
+      if not est_un_nouveau and match_id and match_id != nouveau_match_id:
+        try:
+          db.collection(f"convocations_{categorie}").document(match_id).delete()
+        except Exception:
+          pass
+          
+      match_id = nouveau_match_id
 
+    # Enregistrement final avec le bon ID unique et propre
     doc_ref = db.collection(f"convocations_{categorie}").document(match_id)
     doc_ref.set(payload, merge=True)
 
