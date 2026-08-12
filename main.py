@@ -301,13 +301,30 @@ def register_user(user: dict):
   return {"status": "already_exists"}
 
 
-# --- CONVOCATIONS & ÉVÉNEMENTS (CRUD + NOTIF AUTOMATIQUE) ---
+# --- Nouveaux Modèles Pydantic pour structurer proprement les données ---
+class ConvocationModel(BaseModel):
+  type: Optional[str] = "MATCH"
+  titre: Optional[str] = ""
+  adversaire: Optional[str] = ""
+  date: Optional[str] = ""
+  heure_rdv: Optional[str] = ""
+  heure_coup_envoi: Optional[str] = ""
+  heure: Optional[str] = ""  # Pour les entraînements
+  lieu: Optional[str] = ""
+  entraineurs: Optional[str] = ""
+  sondage_classique: Optional[bool] = True
+  sondage_trajet: Optional[bool] = False
+  activer_convocation: Optional[bool] = False
+  sondage_actif: Optional[bool] = True
+  joueurs_convoques: Optional[list[str]] = Field(default_factory=list)
+
+
 # --- CONVOCATIONS & ÉVÉNEMENTS (CRUD + NOTIF AUTOMATIQUE) ---
 @app.put("/convocations/update/{categorie}/{match_id}")
 def update_convocations(
     categorie: str,
     match_id: str,
-    payload: dict,
+    payload: ConvocationModel,  # <--- On utilise le modèle strict ici au lieu de dict
     background_tasks: BackgroundTasks,
     nom_parent: str = Header(alias="nom_parent"),
 ):
@@ -315,29 +332,30 @@ def update_convocations(
     raise HTTPException(status_code=403, detail="Accès refusé")
 
   try:
-    type_evt = payload.get("type", "EVENEMENT").upper()
-    date_brute = payload.get("date", "").replace("/", "-")  # Nettoyage de la date
+    # On transforme le modèle validé en dictionnaire propre
+    data_dict = payload.model_dump()
+    
+    type_evt = data_dict.get("type", "EVENEMENT").upper()
+    date_brute = data_dict.get("date", "").replace("/", "-")  # Nettoyage de la date
 
-    # SOLUTION : On force la création d'un ID propre et lisible si :
-    # 1. match_id est vide, "Nouvel événement"
-    # 2. OU si le match_id ne correspond pas au type actuel (ex: on était sur un match mais on enregistre un entrainement)
+    # Gestion de la génération de l'ID unique et propre
     est_un_nouveau = not match_id or match_id == "Nouvel événement" or match_id.strip() == ""
     type_incoherent = (type_evt == "MATCH" and not match_id.startswith("match_")) or \
                       (type_evt == "ENTRAINEMENT" and not match_id.startswith("entrainement_"))
 
     if est_un_nouveau or type_incoherent:
       if type_evt == "MATCH":
-        adversaire = payload.get("adversaire", "inconnu").strip().replace(" ", "_").lower()
-        heure_rdv = payload.get("heure_rdv", "").replace(":", "h") or "00h00"
+        adversaire = data_dict.get("adversaire", "inconnu").strip().replace(" ", "_").lower()
+        heure_rdv = data_dict.get("heure_rdv", "").replace(":", "h") or "00h00"
         nouveau_match_id = f"match_{adversaire}_{date_brute}_{heure_rdv}".strip("_")
       elif type_evt == "ENTRAINEMENT":
-        heure_ent = payload.get("heure", payload.get("heure_rdv", "")).replace(":", "h") or "00h00"
+        heure_ent = data_dict.get("heure", data_dict.get("heure_rdv", "")).replace(":", "h") or "00h00"
         nouveau_match_id = f"entrainement_{date_brute}_{heure_ent}".strip("_")
       else:
-        titre_evt = payload.get("titre", "evt").strip().replace(" ", "_").lower()
+        titre_evt = data_dict.get("titre", "evt").strip().replace(" ", "_").lower()
         nouveau_match_id = f"evt_{titre_evt}_{date_brute}".strip("_")
       
-      # Si on a changé de type ou créé un nouveau, on supprime l'ancien document s'il existait sous l'ancien nom obsolète
+      # Suppression de l'ancien document obsolète s'il existait
       if not est_un_nouveau and match_id and match_id != nouveau_match_id:
         try:
           db.collection(f"convocations_{categorie}").document(match_id).delete()
@@ -346,14 +364,14 @@ def update_convocations(
           
       match_id = nouveau_match_id
 
-    # Enregistrement final avec le bon ID unique et propre
+    # Enregistrement final et propre dans Firestore avec des champs strictement cloisonnés
     doc_ref = db.collection(f"convocations_{categorie}").document(match_id)
-    doc_ref.set(payload, merge=True)
+    doc_ref.set(data_dict, merge=True)
 
     # Gestion propre du texte de notification selon le type d'événement
-    titre_evt = payload.get("titre", "")
-    adversaire = payload.get("adversaire", "")
-    date_evt = payload.get("date", "")
+    titre_evt = data_dict.get("titre", "")
+    adversaire = data_dict.get("adversaire", "")
+    date_evt = data_dict.get("date", "")
 
     if type_evt == "ENTRAINEMENT":
       nom_affiche = titre_evt if titre_evt else "Entraînement"
