@@ -29,7 +29,8 @@ app = FastAPI()
 class Vote(BaseModel):
   id_sondage: str
   nom_parent: str
-  choix: str
+  choix: Optional[str] = None          # Pour la disponibilité ("Présent" / "Absent")
+  choix_trajet: Optional[str] = None   # Pour le trajet ("Valdahon", "Stade adverse", "Besoin voiture")
 
 
 class NotifRequest(BaseModel):
@@ -205,24 +206,31 @@ def enregistrer_vote(categorie: str, vote: Vote):
 
   try:
     doc_ref = db.collection(f"convocations_{categorie}").document(vote.id_sondage)
+    
+    # On récupère les votes existants pour ne pas écraser bêtement le document entier
+    doc_snapshot = doc_ref.get()
+    current_votes = {}
+    if doc_snapshot.exists:
+      current_votes = doc_snapshot.to_dict().get("votes", {})
+    
+    # Si l'utilisateur n'a pas encore d'entrée dans le dictionnaire des votes, on initialise un dict pour lui
+    if vote.nom_parent not in current_votes or not isinstance(current_votes[vote.nom_parent], dict):
+      current_votes[vote.nom_parent] = {}
+
+    # On met à jour selon ce qui est envoyé par l'application cliente
+    if vote.choix is not None:
+      current_votes[vote.nom_parent]["disponibilite"] = vote.choix
+    if vote.choix_trajet is not None:
+      current_votes[vote.nom_parent]["trajet"] = vote.choix_trajet
+
     doc_ref.set(
-        {"votes": {vote.nom_parent: vote.choix}}, 
+        {"votes": current_votes}, 
         merge=True
     )
-    return {"message": "Vote mis à jour"}
+    return {"message": "Vote mis à jour avec succès"}
   except Exception as e:
     print(f"[ERREUR VOTE] {e}")
     raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/notifier/{categorie}")
-def envoyer_alerte(
-    categorie: str, payload: NotifRequest, background_tasks: BackgroundTasks
-):
-  background_tasks.add_task(
-      envoyer_notif_push, categorie, payload.titre, payload.corps
-  )
-  return {"message": "Notification programmée"}
 
 
 # --- SONDAGES (CRUD + NOTIF AUTOMATIQUE) ---
