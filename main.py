@@ -204,11 +204,14 @@ def enregistrer_vote(categorie: str, vote: Vote):
     )
 
   try:
-    db.collection(f"sondages_{categorie}").document(vote.id_sondage).update(
-        {f"votes.{vote.nom_parent}": vote.choix}
+    doc_ref = db.collection(f"convocations_{categorie}").document(vote.id_sondage)
+    doc_ref.set(
+        {"votes": {vote.nom_parent: vote.choix}}, 
+        merge=True
     )
     return {"message": "Vote mis à jour"}
   except Exception as e:
+    print(f"[ERREUR VOTE] {e}")
     raise HTTPException(status_code=500, detail=str(e))
 
 
