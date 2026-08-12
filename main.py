@@ -49,7 +49,8 @@ class SondageModel(BaseModel):
   date: str
   heure: str
   lieu: str
-  type: str = Field(..., pattern="^(trajet|dispo)$")
+  type: Optional[str] = "entrainement"
+  sondage_actif: Optional[bool] = True
 
 
 # --- Fonctions utilitaires ---
@@ -297,7 +298,7 @@ def register_user(user: dict):
   return {"status": "already_exists"}
 
 
-# --- CONVOCATIONS (CRUD + NOTIF AUTOMATIQUE) ---
+# --- CONVOCATIONS & ÉVÉNEMENTS (CRUD + NOTIF AUTOMATIQUE) ---
 @app.put("/convocations/update/{categorie}/{match_id}")
 def update_convocations(
     categorie: str,
@@ -314,17 +315,29 @@ def update_convocations(
         payload, merge=True
     )
 
-    # Notification push automatique pour convocation
-    adversaire = payload.get("adversaire", match_id)
-    date_match = payload.get("date", "")
-    corps_notif = (
-        f"Convocation disponible contre {adversaire} ({date_match})".strip()
-    )
+    # CORRECTION : Gestion propre du texte de notification selon le type d'événement
+    type_evt = payload.get("type", "EVENEMENT").upper()
+    titre_evt = payload.get("titre", "")
+    adversaire = payload.get("adversaire", "")
+    date_evt = payload.get("date", "")
+
+    if type_evt == "ENTRAINEMENT":
+      nom_affiche = titre_evt if titre_evt else "Entraînement"
+      corps_notif = f"Nouvel entraînement : {nom_affiche} ({date_evt})".strip()
+      titre_notif = f"FCVV - Entraînement ({categorie})"
+    elif type_evt == "MATCH":
+      nom_affiche = adversaire if adversaire else match_id
+      corps_notif = f"Match contre {nom_affiche} ({date_evt})".strip()
+      titre_notif = f"FCVV - Nouvelle Convocation ({categorie})"
+    else:
+      nom_affiche = titre_evt if titre_evt else match_id
+      corps_notif = f"Événement : {nom_affiche} ({date_evt})".strip()
+      titre_notif = f"FCVV - Nouvel Événement ({categorie})"
 
     background_tasks.add_task(
         envoyer_notif_push,
         categorie,
-        f"FCVV - Nouvelle Convocation ({categorie})",
+        titre_notif,
         corps_notif,
     )
 
