@@ -30,8 +30,8 @@ class Vote(BaseModel):
   id_sondage: str
   nom_parent: str
   choix: Optional[str] = None          # Pour la disponibilité ("Présent" / "Absent")
-  choix_trajet: Optional[str] = None   # Pour le trajet ("Valdahon", "Stade adverse", "Besoin voiture")
-  second_vote: Optional[str] = None    # Pour le second sondage / phase 2
+  choix_trajet: Optional[str] = None   # Pour le trajet / second vote
+  second_vote: Optional[str] = None
 
 
 class NotifRequest(BaseModel):
@@ -208,17 +208,14 @@ def enregistrer_vote(categorie: str, vote: Vote):
   try:
     doc_ref = db.collection(f"convocations_{categorie}").document(vote.id_sondage)
     
-    # On récupère les votes existants pour ne pas écraser bêtement le document entier
     doc_snapshot = doc_ref.get()
     current_votes = {}
     if doc_snapshot.exists:
       current_votes = doc_snapshot.to_dict().get("votes", {})
     
-    # Si l'utilisateur n'a pas encore d'entrée dans le dictionnaire des votes, on initialise un dict pour lui
     if vote.nom_parent not in current_votes or not isinstance(current_votes[vote.nom_parent], dict):
       current_votes[vote.nom_parent] = {}
 
-    # On met à jour selon ce qui est envoyé par l'application cliente
     if vote.choix is not None:
       current_votes[vote.nom_parent]["disponibilite"] = vote.choix
     if vote.choix_trajet is not None:
@@ -249,7 +246,6 @@ def create_sondage(
   try:
     db.collection(f"sondages_{categorie}").add(sondage.model_dump())
 
-    # Notification push automatique
     background_tasks.add_task(
         envoyer_notif_push,
         categorie,
@@ -312,7 +308,7 @@ def register_user(user: dict):
   return {"status": "already_exists"}
 
 
-# --- Nouveaux Modèles Pydantic pour structurer proprement les données ---
+# --- Modèle Pydantic pour les Convocations & Événements ---
 class ConvocationModel(BaseModel):
   type: Optional[str] = "MATCH"
   titre: Optional[str] = ""
@@ -324,11 +320,10 @@ class ConvocationModel(BaseModel):
   lieu: Optional[str] = ""
   entraineurs: Optional[str] = ""
   sondage_classique: Optional[bool] = True
-  sondage_trajet: Optional[bool] = False
+  sondage_trajet: Optional[bool] = False         # Pilote le second vote
+  titre_second_vote: Optional[str] = "Second Vote"  # Titre personnalisable du second vote
   activer_convocation: Optional[bool] = False
   sondage_actif: Optional[bool] = True
-  second_vote_actif: Optional[bool] = False         # <--- À ajouter dans le modèle
-  titre_second_vote: Optional[str] = "Second Vote"  # <--- À ajouter dans le modèle
   joueurs_convoques: Optional[list[str]] = Field(default_factory=list)
 
 
@@ -337,7 +332,7 @@ class ConvocationModel(BaseModel):
 def update_convocations(
     categorie: str,
     match_id: str,
-    payload: ConvocationModel,  # <--- On utilise le modèle strict ici au lieu de dict
+    payload: ConvocationModel,
     background_tasks: BackgroundTasks,
     nom_parent: str = Header(alias="nom_parent"),
 ):
@@ -345,13 +340,11 @@ def update_convocations(
     raise HTTPException(status_code=403, detail="Accès refusé")
 
   try:
-    # On transforme le modèle validé en dictionnaire propre
     data_dict = payload.model_dump()
     
     type_evt = data_dict.get("type", "EVENEMENT").upper()
-    date_brute = data_dict.get("date", "").replace("/", "-")  # Nettoyage de la date
+    date_brute = data_dict.get("date", "").replace("/", "-")
 
-    # Gestion de la génération de l'ID unique et propre
     est_un_nouveau = not match_id or match_id == "Nouvel événement" or match_id.strip() == ""
     type_incoherent = (type_evt == "MATCH" and not match_id.startswith("match_")) or \
                       (type_evt == "ENTRAINEMENT" and not match_id.startswith("entrainement_"))
@@ -368,7 +361,6 @@ def update_convocations(
         titre_evt = data_dict.get("titre", "evt").strip().replace(" ", "_").lower()
         nouveau_match_id = f"evt_{titre_evt}_{date_brute}".strip("_")
       
-      # Suppression de l'ancien document obsolète s'il existait
       if not est_un_nouveau and match_id and match_id != nouveau_match_id:
         try:
           db.collection(f"convocations_{categorie}").document(match_id).delete()
@@ -377,11 +369,9 @@ def update_convocations(
           
       match_id = nouveau_match_id
 
-    # Enregistrement final et propre dans Firestore avec des champs strictement cloisonnés
     doc_ref = db.collection(f"convocations_{categorie}").document(match_id)
     doc_ref.set(data_dict, merge=True)
 
-    # Gestion propre du texte de notification selon le type d'événement
     titre_evt = data_dict.get("titre", "")
     adversaire = data_dict.get("adversaire", "")
     date_evt = data_dict.get("date", "")
