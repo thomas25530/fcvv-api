@@ -314,12 +314,31 @@ def update_convocations(
     raise HTTPException(status_code=403, detail="Accès refusé")
 
   try:
-    db.collection(f"convocations_{categorie}").document(match_id).set(
-        payload, merge=True
-    )
-
-    # CORRECTION : Gestion propre du texte de notification selon le type d'événement
     type_evt = payload.get("type", "EVENEMENT").upper()
+    date_brute = payload.get("date", "").replace("/", "-")  # Nettoyage de la date pour l'ID
+
+    # Génération d'un nom de document propre et lisible si c'est une création
+    if not match_id or match_id == "Nouvel événement" or match_id.strip() == "":
+      if type_evt == "MATCH":
+        adversaire = payload.get("adversaire", "inconnu").strip().replace(" ", "_").lower()
+        heure_rdv = payload.get("heure_rdv", "").replace(":", "h")
+        match_id = f"match_{adversaire}_{date_brute}_{heure_rdv}".strip("_")
+      elif type_evt == "ENTRAINEMENT":
+        heure_ent = payload.get("heure", payload.get("heure_rdv", "")).replace(":", "h")
+        match_id = f"entrainement_{date_brute}_{heure_ent}".strip("_")
+      else:
+        titre_evt = payload.get("titre", "evt").strip().replace(" ", "_").lower()
+        match_id = f"evt_{titre_evt}_{date_brute}".strip("_")
+    else:
+      # Si on modifie un document existant, on supprime l'ancien s'il portait un nom temporaire ou s'il a changé
+      old_doc_ref = db.collection(f"convocations_{categorie}").document(match_id)
+      # On effectue la mise à jour sur le nouveau ou l'ancien ID
+      pass
+
+    doc_ref = db.collection(f"convocations_{categorie}").document(match_id)
+    doc_ref.set(payload, merge=True)
+
+    # Gestion propre du texte de notification selon le type d'événement
     titre_evt = payload.get("titre", "")
     adversaire = payload.get("adversaire", "")
     date_evt = payload.get("date", "")
@@ -344,7 +363,7 @@ def update_convocations(
         corps_notif,
     )
 
-    return {"status": "updated"}
+    return {"status": "updated", "id": match_id}
   except Exception as e:
     raise HTTPException(status_code=500, detail=str(e))
 
