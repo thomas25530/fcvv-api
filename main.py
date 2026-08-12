@@ -31,6 +31,7 @@ class Vote(BaseModel):
   nom_parent: str
   choix: Optional[str] = None          # Pour la disponibilité ("Présent" / "Absent")
   choix_trajet: Optional[str] = None   # Pour le trajet ("Valdahon", "Stade adverse", "Besoin voiture")
+  second_vote: Optional[str] = None    # Pour le second sondage / phase 2
 
 
 class NotifRequest(BaseModel):
@@ -222,6 +223,8 @@ def enregistrer_vote(categorie: str, vote: Vote):
       current_votes[vote.nom_parent]["disponibilite"] = vote.choix
     if vote.choix_trajet is not None:
       current_votes[vote.nom_parent]["trajet"] = vote.choix_trajet
+    if vote.second_vote is not None:
+      current_votes[vote.nom_parent]["second_vote"] = vote.second_vote
 
     doc_ref.set(
         {"votes": current_votes}, 
@@ -317,13 +320,15 @@ class ConvocationModel(BaseModel):
   date: Optional[str] = ""
   heure_rdv: Optional[str] = ""
   heure_coup_envoi: Optional[str] = ""
-  heure: Optional[str] = ""  # Pour les entraînements
+  heure: Optional[str] = ""
   lieu: Optional[str] = ""
   entraineurs: Optional[str] = ""
   sondage_classique: Optional[bool] = True
   sondage_trajet: Optional[bool] = False
   activer_convocation: Optional[bool] = False
   sondage_actif: Optional[bool] = True
+  second_vote_actif: Optional[bool] = False         # <--- À ajouter dans le modèle
+  titre_second_vote: Optional[str] = "Second Vote"  # <--- À ajouter dans le modèle
   joueurs_convoques: Optional[list[str]] = Field(default_factory=list)
 
 
