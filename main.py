@@ -325,6 +325,7 @@ class ConvocationModel(BaseModel):
   activer_convocation: Optional[bool] = False
   sondage_actif: Optional[bool] = True
   joueurs_convoques: Optional[list] = Field(default_factory=list)
+  dernier_commit: Optional[str] = ""
 
 
 # --- CONVOCATIONS & ÉVÉNEMENTS (CRUD + NOTIF AUTOMATIQUE) ---
