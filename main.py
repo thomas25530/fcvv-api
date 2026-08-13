@@ -322,6 +322,8 @@ class ConvocationModel(BaseModel):
   sondage_classique: Optional[bool] = True
   sondage_trajet: Optional[bool] = False         # Pilote le second vote
   titre_second_vote: Optional[str] = "Second Vote"  # Titre personnalisable du second vote
+  type_sondage: Optional[str] = "classique"      # "classique" ou "multiple"
+  options_sondage: Optional[list] = Field(default_factory=list) # Liste des options (ex: ["1", "2", "3", "4", "5"])
   activer_convocation: Optional[bool] = False
   sondage_actif: Optional[bool] = True
   joueurs_convoques: Optional[list] = Field(default_factory=list)
