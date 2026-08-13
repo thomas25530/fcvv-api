@@ -324,7 +324,7 @@ class ConvocationModel(BaseModel):
   titre_second_vote: Optional[str] = "Second Vote"  # Titre personnalisable du second vote
   activer_convocation: Optional[bool] = False
   sondage_actif: Optional[bool] = True
-  joueurs_convoques: Optional[list[str]] = Field(default_factory=list)
+  joueurs_convoques: Optional[list] = Field(default_factory=list)
 
 
 # --- CONVOCATIONS & ÉVÉNEMENTS (CRUD + NOTIF AUTOMATIQUE) ---
