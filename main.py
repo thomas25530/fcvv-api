@@ -323,10 +323,11 @@ class ConvocationModel(BaseModel):
   lieu: Optional[str] = ""
   entraineurs: Optional[str] = ""
   sondage_classique: Optional[bool] = True
-  sondage_trajet: Optional[bool] = False         # Pilote le second vote
-  titre_second_vote: Optional[str] = "Second Vote"  # Titre personnalisable du second vote
-  type_sondage: Optional[str] = "classique"      # "classique" ou "multiple"
-  options_sondage: Optional[list] = Field(default_factory=list) # Liste des options (ex: ["1", "2", "3", "4", "5"])
+  sondage_trajet: Optional[bool] = False
+  titre_second_vote: Optional[str] = "Second Vote"
+  type_sondage: Optional[str] = "classique"
+  titre_sondage_multiple: Optional[str] = "Choix multiple" # <--- Nouveau champ
+  options_sondage: Optional[list] = Field(default_factory=list)
   activer_convocation: Optional[bool] = False
   sondage_actif: Optional[bool] = True
   joueurs_convoques: Optional[list] = Field(default_factory=list)
