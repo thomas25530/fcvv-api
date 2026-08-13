@@ -30,8 +30,9 @@ class Vote(BaseModel):
   id_sondage: str
   nom_parent: str
   choix: Optional[str] = None          # Pour la disponibilité ("Présent" / "Absent")
-  choix_trajet: Optional[str] = None   # Pour le trajet / second vote
-  second_vote: Optional[str] = None
+  choix_trajet: Optional[str] = None   # Pour le trajet
+  second_vote: Optional[str] = None    # Pour le second vote
+  choix_multiple: Optional[str] = None # Pour le nouveau sondage à choix multiples
 
 
 class NotifRequest(BaseModel):
@@ -222,6 +223,8 @@ def enregistrer_vote(categorie: str, vote: Vote):
       current_votes[vote.nom_parent]["trajet"] = vote.choix_trajet
     if vote.second_vote is not None:
       current_votes[vote.nom_parent]["second_vote"] = vote.second_vote
+    if vote.choix_multiple is not None:
+      current_votes[vote.nom_parent]["choix_multiple"] = vote.choix_multiple
 
     doc_ref.set(
         {"votes": current_votes}, 
