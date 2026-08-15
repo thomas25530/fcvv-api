@@ -332,26 +332,39 @@ def register_user(user: dict):
   id_utilisateur = raw_nom.replace(" ", "_").lower()
   
   nouveau_joueur = user.get("joueur_associe", "").strip()
+  categorie = user.get("categorie", "").strip() # <--- Récupérer la catégorie envoyée par l'app
 
   doc_ref = db.collection("users").document(id_utilisateur)
   doc_snapshot = doc_ref.get()
 
   if not doc_snapshot.exists:
-    # Création du compte avec une liste contenant le premier joueur
+    # Création du compte avec la liste des joueurs et la catégorie
     joueurs_list = [nouveau_joueur] if nouveau_joueur else []
+    categories_list = [categorie] if categorie else []
+    
     doc_ref.set({
         "nom": raw_nom, 
         "role": "PARENT",
-        "joueurs_associes": joueurs_list
+        "joueurs_associes": joueurs_list,
+        "categories_associees": categories_list # <--- Sauvegarde de la catégorie dans Firebase
     })
     return {"status": "created", "id": id_utilisateur}
   else:
-    # Si le compte existe déjà, on ajoute le nouveau joueur s'il n'y est pas déjà
+    # Si le compte existe déjà, on met à jour les listes sans doublons
     data = doc_snapshot.to_dict()
+    
     joueurs_list = data.get("joueurs_associes", [])
     if nouveau_joueur and nouveau_joueur not in joueurs_list:
       joueurs_list.append(nouveau_joueur)
-      doc_ref.update({"joueurs_associes": joueurs_list})
+      
+    categories_list = data.get("categories_associees", [])
+    if categorie and categorie not in categories_list:
+      categories_list.append(categorie)
+
+    doc_ref.update({
+        "joueurs_associes": joueurs_list,
+        "categories_associees": categories_list
+    })
     return {"status": "already_exists"}
 
 
