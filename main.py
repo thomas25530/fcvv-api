@@ -29,10 +29,11 @@ app = FastAPI()
 class Vote(BaseModel):
   id_sondage: str
   nom_parent: str
-  choix: Optional[str] = None          # Pour la disponibilité ("Présent" / "Absent")
-  choix_trajet: Optional[str] = None   # Pour le trajet
-  second_vote: Optional[str] = None    # Pour le second vote
-  choix_multiple: Optional[str] = None # Pour le nouveau sondage à choix multiples
+  nom_joueur_concerne: Optional[str] = None # <--- Pour cibler l'enfant en question
+  choix: Optional[str] = None          
+  choix_trajet: Optional[str] = None   
+  second_vote: Optional[str] = None    
+  choix_multiple: Optional[str] = None
 
 
 class NotifRequest(BaseModel):
@@ -129,7 +130,16 @@ def envoyer_notification_manuelle(
   except Exception as e:
     raise HTTPException(status_code=500, detail=str(e))
 
+def obtenir_joueurs_associes(nom_parent: str) -> list:
+  if not nom_parent:
+    return []
+  id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
+  doc_ref = db.collection("users").document(id_utilisateur).get()
 
+  if doc_ref.exists:
+    data = doc_ref.to_dict()
+    return data.get("joueurs_associes", [])
+  return []
 
 # --- Routes ---
 @app.get("/")
@@ -218,11 +228,15 @@ def get_sondages_par_categorie(
 @app.post("/voter/{categorie}")
 def enregistrer_vote(categorie: str, vote: Vote):
   if verifier_si_exclu(vote.nom_parent):
-    raise HTTPException(
-        status_code=403, detail="Action interdite : compte exclu"
-    )
+    raise HTTPException(status_code=403, detail="Action interdite : compte exclu")
 
   try:
+    # Utiliser le joueur ciblé par le parent, ou prendre le premier de sa liste par défaut
+    nom_identifiant_vote = vote.nom_joueur_concerne
+    if not nom_identifiant_vote:
+      joueurs_lies = obtenir_joueurs_associes(vote.nom_parent)
+      nom_identifiant_vote = joueurs_lies[0] if joueurs_lies else vote.nom_parent
+
     doc_ref = db.collection(f"convocations_{categorie}").document(vote.id_sondage)
     
     doc_snapshot = doc_ref.get()
@@ -230,23 +244,22 @@ def enregistrer_vote(categorie: str, vote: Vote):
     if doc_snapshot.exists:
       current_votes = doc_snapshot.to_dict().get("votes", {})
     
-    if vote.nom_parent not in current_votes or not isinstance(current_votes[vote.nom_parent], dict):
-      current_votes[vote.nom_parent] = {}
+    if nom_identifiant_vote not in current_votes or not isinstance(current_votes[nom_identifiant_vote], dict):
+      current_votes[nom_identifiant_vote] = {}
 
     if vote.choix is not None:
-      current_votes[vote.nom_parent]["disponibilite"] = vote.choix
+      current_votes[nom_identifiant_vote]["disponibilite"] = vote.choix
     if vote.choix_trajet is not None:
-      current_votes[vote.nom_parent]["trajet"] = vote.choix_trajet
+      current_votes[nom_identifiant_vote]["trajet"] = vote.choix_trajet
     if vote.second_vote is not None:
-      current_votes[vote.nom_parent]["second_vote"] = vote.second_vote
+      current_votes[nom_identifiant_vote]["second_vote"] = vote.second_vote
     if vote.choix_multiple is not None:
-      current_votes[vote.nom_parent]["choix_multiple"] = vote.choix_multiple
+      current_votes[nom_identifiant_vote]["choix_multiple"] = vote.choix_multiple
 
-    doc_ref.set(
-        {"votes": current_votes}, 
-        merge=True
-    )
-    return {"message": "Vote mis à jour avec succès"}
+    current_votes[nom_identifiant_vote]["dernier_modificateur"] = vote.nom_parent
+
+    doc_ref.set({"votes": current_votes}, merge=True)
+    return {"message": "Vote mis à jour avec succès", "joueur": nom_identifiant_vote}
   except Exception as e:
     print(f"[ERREUR VOTE] {e}")
     raise HTTPException(status_code=500, detail=str(e))
@@ -317,14 +330,29 @@ def delete_sondage(
 def register_user(user: dict):
   raw_nom = user.get("nom", "").strip()
   id_utilisateur = raw_nom.replace(" ", "_").lower()
+  
+  nouveau_joueur = user.get("joueur_associe", "").strip()
 
   doc_ref = db.collection("users").document(id_utilisateur)
+  doc_snapshot = doc_ref.get()
 
-  if not doc_ref.get().exists:
-    doc_ref.set({"nom": raw_nom, "role": "PARENT"})
+  if not doc_snapshot.exists:
+    # Création du compte avec une liste contenant le premier joueur
+    joueurs_list = [nouveau_joueur] if nouveau_joueur else []
+    doc_ref.set({
+        "nom": raw_nom, 
+        "role": "PARENT",
+        "joueurs_associes": joueurs_list
+    })
     return {"status": "created", "id": id_utilisateur}
-
-  return {"status": "already_exists"}
+  else:
+    # Si le compte existe déjà, on ajoute le nouveau joueur s'il n'y est pas déjà
+    data = doc_snapshot.to_dict()
+    joueurs_list = data.get("joueurs_associes", [])
+    if nouveau_joueur and nouveau_joueur not in joueurs_list:
+      joueurs_list.append(nouveau_joueur)
+      doc_ref.update({"joueurs_associes": joueurs_list})
+    return {"status": "already_exists"}
 
 
 # --- Modèle Pydantic pour les Convocations & Événements ---
