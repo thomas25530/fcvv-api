@@ -114,6 +114,22 @@ def verifier_si_admin(nom_parent: str) -> bool:
 def verifier_si_exclu(nom_parent: str) -> bool:
   return obtenir_role_utilisateur(nom_parent) == "EXCLU"
 
+# --- ROUTE NOTIFICATION MANUELLE (Panneau Admin Python) ---
+@app.post("/notifier/{categorie}")
+def envoyer_notification_manuelle(
+    categorie: str, notif: NotifRequest
+):
+  try:
+    envoyer_notif_push(
+        topic=categorie,
+        titre=notif.titre,
+        corps=notif.corps,
+    )
+    return {"status": "success", "message": "Notification envoyée avec succès"}
+  except Exception as e:
+    raise HTTPException(status_code=500, detail=str(e))
+
+
 
 # --- Routes ---
 @app.get("/")
