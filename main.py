@@ -231,11 +231,17 @@ def enregistrer_vote(categorie: str, vote: Vote):
     raise HTTPException(status_code=403, detail="Action interdite : compte exclu")
 
   try:
-    # Priorité absolue au joueur concerné s'il est fourni, sinon premier joueur associé, sinon nom_parent
+    # 1. On cherche explicitement le joueur concerné transmis par l'application
     nom_identifiant_vote = vote.nom_joueur_concerne
+
+    # 2. S'il n'est pas fourni, on regarde dans les enfants associés au parent dans Firestore
     if not nom_identifiant_vote:
       joueurs_lies = obtenir_joueurs_associes(vote.nom_parent)
-      nom_identifiant_vote = joueurs_lies[0] if joueurs_lies else vote.nom_parent
+      if joueurs_lies:
+        nom_identifiant_vote = joueurs_lies[0]
+      else:
+        # Secours ultime : si aucun enfant n'est trouvé, on utilise le parent
+        nom_identifiant_vote = vote.nom_parent
 
     doc_ref = db.collection(f"convocations_{categorie}").document(vote.id_sondage)
     
