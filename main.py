@@ -231,7 +231,7 @@ def enregistrer_vote(categorie: str, vote: Vote):
     raise HTTPException(status_code=403, detail="Action interdite : compte exclu")
 
   try:
-    # Utiliser le joueur ciblé par le parent, ou prendre le premier de sa liste par défaut
+    # Priorité absolue au joueur concerné s'il est fourni, sinon premier joueur associé, sinon nom_parent
     nom_identifiant_vote = vote.nom_joueur_concerne
     if not nom_identifiant_vote:
       joueurs_lies = obtenir_joueurs_associes(vote.nom_parent)
@@ -244,9 +244,11 @@ def enregistrer_vote(categorie: str, vote: Vote):
     if doc_snapshot.exists:
       current_votes = doc_snapshot.to_dict().get("votes", {})
     
+    # S'assurer que le dictionnaire pour ce joueur existe
     if nom_identifiant_vote not in current_votes or not isinstance(current_votes[nom_identifiant_vote], dict):
       current_votes[nom_identifiant_vote] = {}
 
+    # Mise à jour des champs du vote
     if vote.choix is not None:
       current_votes[nom_identifiant_vote]["disponibilite"] = vote.choix
     if vote.choix_trajet is not None:
