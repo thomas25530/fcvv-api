@@ -333,47 +333,90 @@ def delete_sondage(
     raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- USERS ---
+# --- USERS (REGISTER & UNREGISTER) ---
 @app.post("/users/register")
 def register_user(user: dict):
-  raw_nom = user.get("nom", "").strip()
-  id_utilisateur = raw_nom.replace(" ", "_").lower()
-  
-  nouveau_joueur = user.get("joueur_associe", "").strip()
-  categorie = user.get("categorie", "").strip() # <--- Récupérer la catégorie envoyée par l'app
-
-  doc_ref = db.collection("users").document(id_utilisateur)
-  doc_snapshot = doc_ref.get()
-
-  if not doc_snapshot.exists:
-    # Création du compte avec la liste des joueurs et la catégorie
-    joueurs_list = [nouveau_joueur] if nouveau_joueur else []
-    categories_list = [categorie] if categorie else []
+    raw_nom = user.get("nom", "").strip()
+    id_utilisateur = raw_nom.replace(" ", "_").lower()
     
-    doc_ref.set({
-        "nom": raw_nom, 
-        "role": "PARENT",
-        "joueurs_associes": joueurs_list,
-        "categories_associees": categories_list # <--- Sauvegarde de la catégorie dans Firebase
-    })
-    return {"status": "created", "id": id_utilisateur}
-  else:
-    # Si le compte existe déjà, on met à jour les listes sans doublons
-    data = doc_snapshot.to_dict()
+    nouveau_joueur = user.get("joueur_associe", "").strip()
+    categorie = user.get("categorie", "").strip()
     
-    joueurs_list = data.get("joueurs_associes", [])
-    if nouveau_joueur and nouveau_joueur not in joueurs_list:
-      joueurs_list.append(nouveau_joueur)
-      
-    categories_list = data.get("categories_associees", [])
-    if categorie and categorie not in categories_list:
-      categories_list.append(categorie)
+    doc_ref = db.collection("users").document(id_utilisateur)
+    doc_snapshot = doc_ref.get()
+    
+    if not doc_snapshot.exists:
+        joueurs_list = [nouveau_joueur] if nouveau_joueur else []
+        categories_list = [categorie] if categorie else []
+        
+        doc_ref.set({
+            "nom": raw_nom,
+            "role": "PARENT",
+            "joueurs_associes": joueurs_list,
+            "categories_associees": categories_list
+        })
+        return {"status": "created", "id": id_utilisateur}
+    else:
+        data = doc_snapshot.to_dict()
+        
+        joueurs_list = data.get("joueurs_associes", [])
+        if nouveau_joueur and nouveau_joueur not in joueurs_list:
+            joueurs_list.append(nouveau_joueur)
+            
+        categories_list = data.get("categories_associees", [])
+        if categorie and categorie not in categories_list:
+            categories_list.append(categorie)
+    
+        doc_ref.update({
+            "joueurs_associes": joueurs_list,
+            "categories_associees": categories_list
+        })
+        return {"status": "already_exists"}
 
-    doc_ref.update({
-        "joueurs_associes": joueurs_list,
-        "categories_associees": categories_list
-    })
-    return {"status": "already_exists"}
+
+@app.post("/users/unregister")
+def unregister_user(data: dict):
+    """
+    Supprime l'association d'une catégorie et/ou d'un joueur pour un utilisateur.
+    Exemple de body envoyé par Kivy : {"nom": "Jean DUPONT", "categorie": "U11"}
+    """
+    raw_nom = data.get("nom", "").strip()
+    categorie = data.get("categorie", "").strip()
+    joueur_associe = data.get("joueur_associe", "").strip()
+    
+    if not raw_nom:
+        raise HTTPException(status_code=400, detail="Nom d'utilisateur requis")
+    
+    id_utilisateur = raw_nom.replace(" ", "_").lower()
+    doc_ref = db.collection("users").document(id_utilisateur)
+    doc_snapshot = doc_ref.get()
+    
+    if not doc_snapshot.exists:
+        return {"status": "not_found", "message": "Utilisateur non trouvé"}
+    
+    user_data = doc_snapshot.to_dict()
+    categories_list = user_data.get("categories_associees", [])
+    joueurs_list = user_data.get("joueurs_associes", [])
+    
+    # Retirer la catégorie demandée
+    if categorie and categorie in categories_list:
+        categories_list.remove(categorie)
+    
+    # Si un joueur spécifique est passé à la désinscription
+    if joueur_associe and joueur_associe in joueurs_list:
+        joueurs_list.remove(joueur_associe)
+    
+    # Si l'utilisateur n'a plus aucune catégorie active, on peut supprimer le document
+    # ou réinitialiser ses listes
+    if not categories_list:
+        doc_ref.delete()
+        return {"status": "deleted", "message": "Compte supprimé car aucune catégorie active"}
+    else:
+        doc_ref.update({
+            "categories_associees": categories_list,
+            "joueurs_associes": joueurs_list
+        })
+        return {"status": "unregistered", "message": f"Catégorie {categorie} retirée"}
 
 
 # --- Modèle Pydantic pour les Convocations & Événements ---
