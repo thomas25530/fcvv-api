@@ -376,14 +376,16 @@ def register_user(user: dict):
 
 @app.post("/users/unregister")
 def unregister_user(data: dict):
-    """
-    Supprime l'association d'une catégorie et/ou d'un joueur pour un utilisateur.
-    Exemple de body envoyé par Kivy : {"nom": "Jean DUPONT", "categorie": "U11"}
-    """
     raw_nom = data.get("nom", "").strip()
     categorie = data.get("categorie", "").strip()
-    joueur_associe = data.get("joueur_associe", "").strip()
     
+    # On peut accepter soit un nom unique, soit une liste
+    joueur_associe = data.get("joueur_associe", "")
+    joueurs_a_retirer = data.get("joueurs_a_retirer", [])
+    
+    if joueur_associe and not joueurs_a_retirer:
+        joueurs_a_retirer = [joueur_associe]
+
     if not raw_nom:
         raise HTTPException(status_code=400, detail="Nom d'utilisateur requis")
     
@@ -398,25 +400,24 @@ def unregister_user(data: dict):
     categories_list = user_data.get("categories_associees", [])
     joueurs_list = user_data.get("joueurs_associes", [])
     
-    # Retirer la catégorie demandée
+    # Retirer la catégorie
     if categorie and categorie in categories_list:
         categories_list.remove(categorie)
     
-    # Si un joueur spécifique est passé à la désinscription
-    if joueur_associe and joueur_associe in joueurs_list:
-        joueurs_list.remove(joueur_associe)
+    # Retirer TOUS les joueurs de la liste concernée
+    for j in joueurs_a_retirer:
+        if j in joueurs_list:
+            joueurs_list.remove(j)
     
-    # Si l'utilisateur n'a plus aucune catégorie active, on peut supprimer le document
-    # ou réinitialiser ses listes
     if not categories_list:
         doc_ref.delete()
-        return {"status": "deleted", "message": "Compte supprimé car aucune catégorie active"}
+        return {"status": "deleted", "message": "Compte supprimé"}
     else:
         doc_ref.update({
             "categories_associees": categories_list,
             "joueurs_associes": joueurs_list
         })
-        return {"status": "unregistered", "message": f"Catégorie {categorie} retirée"}
+        return {"status": "unregistered", "message": f"Catégorie {categorie} et ses joueurs retirés"}
 
 
 # --- Modèle Pydantic pour les Convocations & Événements ---
