@@ -379,7 +379,6 @@ def unregister_user(data: dict):
     raw_nom = data.get("nom", "").strip()
     categorie = data.get("categorie", "").strip()
     
-    # On peut accepter soit un nom unique, soit une liste
     joueur_associe = data.get("joueur_associe", "")
     joueurs_a_retirer = data.get("joueurs_a_retirer", [])
     
@@ -400,24 +399,26 @@ def unregister_user(data: dict):
     categories_list = user_data.get("categories_associees", [])
     joueurs_list = user_data.get("joueurs_associes", [])
     
-    # Retirer la catégorie
+    # 1. Retirer la catégorie si elle est présente
     if categorie and categorie in categories_list:
         categories_list.remove(categorie)
     
-    # Retirer TOUS les joueurs de la liste concernée
+    # 2. Retirer les joueurs concernés
     for j in joueurs_a_retirer:
         if j in joueurs_list:
             joueurs_list.remove(j)
     
-    if not categories_list:
-        doc_ref.delete()
-        return {"status": "deleted", "message": "Compte supprimé"}
-    else:
-        doc_ref.update({
-            "categories_associees": categories_list,
-            "joueurs_associes": joueurs_list
-        })
-        return {"status": "unregistered", "message": f"Catégorie {categorie} et ses joueurs retirés"}
+    # 3. MISE À JOUR : On garde le document pour conserver le 'role' (ADMIN, etc.)
+    # On met simplement à jour les listes, même si elles deviennent vides.
+    doc_ref.update({
+        "categories_associees": categories_list,
+        "joueurs_associes": joueurs_list
+    })
+    
+    return {
+        "status": "unregistered", 
+        "message": f"Désinscription de la catégorie {categorie} effectuée. Profil conservé."
+    }
 
 
 # --- Modèle Pydantic pour les Convocations & Événements ---
