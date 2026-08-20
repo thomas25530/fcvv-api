@@ -291,9 +291,6 @@ def enregistrer_vote(
         print(f"[ERREUR VOTE] {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-
-
 # --- SONDAGES (CRUD + NOTIF AUTOMATIQUE) ---
 @app.post("/sondages/create/{categorie}")
 def create_sondage(
