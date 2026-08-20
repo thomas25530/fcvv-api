@@ -18,7 +18,7 @@ try:
     cred = credentials.Certificate(json.loads(firebase_config_str))
     firebase_admin.initialize_app(cred)
     db = firestore.client()
-    print("Firebase initialisé avec succès")
+    print("Firebase initialise avec succes")
 except Exception as e:
   print(f"Erreur critique initialisation Firebase: {e}")
 
@@ -90,7 +90,7 @@ def envoyer_notif_push(topic: str, titre: str, corps: str):
     )
 
     response = messaging.send(message)
-    print(f"[FCM API] envoyé : {response}")
+    print(f"[FCM API] envoye : {response}")
 
   except Exception as e:
     print(f"[FCM ERROR] {e}")
@@ -226,51 +226,70 @@ def get_sondages_par_categorie(
 
 
 @app.post("/voter/{categorie}")
-def enregistrer_vote(categorie: str, vote: Vote):
-  if verifier_si_exclu(vote.nom_parent):
-    raise HTTPException(status_code=403, detail="Action interdite : compte exclu")
+def enregistrer_vote(
+    categorie: str,
+    vote: Vote,
+    nom_parent_header: Optional[str] = Header(None, alias="nom_parent")
+):
+    # 1. Identification stricte de l'utilisateur connecté (Auteur de l'action)
+    utilisateur_connecte = (nom_parent_header or vote.nom_parent or "").strip()
 
-  try:
-    # 1. On cherche explicitement le joueur concerné transmis par l'application
-    nom_identifiant_vote = vote.nom_joueur_concerne
+    if not utilisateur_connecte:
+        raise HTTPException(status_code=400, detail="Identifiant de l'utilisateur manquant")
 
-    # 2. S'il n'est pas fourni, on regarde dans les enfants associés au parent dans Firestore
-    if not nom_identifiant_vote:
-      joueurs_lies = obtenir_joueurs_associes(vote.nom_parent)
-      if joueurs_lies:
-        nom_identifiant_vote = joueurs_lies[0]
-      else:
-        # Secours ultime : si aucun enfant n'est trouvé, on utilise le parent
-        nom_identifiant_vote = vote.nom_parent
+    if verifier_si_exclu(utilisateur_connecte):
+        raise HTTPException(status_code=403, detail="Action interdite : compte exclu")
 
-    doc_ref = db.collection(f"convocations_{categorie}").document(vote.id_sondage)
-    
-    doc_snapshot = doc_ref.get()
-    current_votes = {}
-    if doc_snapshot.exists:
-      current_votes = doc_snapshot.to_dict().get("votes", {})
-    
-    # S'assurer que le dictionnaire pour ce joueur existe
-    if nom_identifiant_vote not in current_votes or not isinstance(current_votes[nom_identifiant_vote], dict):
-      current_votes[nom_identifiant_vote] = {}
+    try:
+        # 2. Identification de l'entité/joueur ciblé par le vote
+        nom_identifiant_vote = (vote.nom_joueur_concerne or "").strip()
 
-    # Mise à jour des champs du vote
-    if vote.choix is not None:
-      current_votes[nom_identifiant_vote]["disponibilite"] = vote.choix
-    if vote.choix_trajet is not None:
-      current_votes[nom_identifiant_vote]["trajet"] = vote.choix_trajet
-    if vote.second_vote is not None:
-      current_votes[nom_identifiant_vote]["second_vote"] = vote.second_vote
-    if vote.choix_multiple is not None:
-      current_votes[nom_identifiant_vote]["choix_multiple"] = vote.choix_multiple
+        # S'il n'est pas fourni, recherche dans les rôles/enfants associés dans Firestore
+        if not nom_identifiant_vote:
+            joueurs_lies = obtenir_joueurs_associes(utilisateur_connecte)
+            if joueurs_lies:
+                nom_identifiant_vote = joueurs_lies[0]
+            else:
+                nom_identifiant_vote = utilisateur_connecte
 
-    current_votes[nom_identifiant_vote]["dernier_modificateur"] = vote.nom_parent
+        # 3. Détection du rôle COACH
+        is_coach = str(nom_identifiant_vote).upper().startswith("COACH_")
 
-    doc_ref.set({"votes": current_votes}, merge=True)
-    return {"message": "Vote mis à jour avec succès", "joueur": nom_identifiant_vote}
-  except Exception as e:
-    print(f"[ERREUR VOTE] {e}")
-    raise HTTPException(status_code=500, detail=str(e))
+        # 4. Récupération de la convocation Firestore
+        doc_ref = db.collection(f"convocations_{categorie}").document(vote.id_sondage)
+        doc_snapshot = doc_ref.get()
+        
+        current_votes = {}
+        if doc_snapshot.exists:
+            current_votes = doc_snapshot.to_dict().get("votes", {})
+        
+        if nom_identifiant_vote not in current_votes or not isinstance(current_votes[nom_identifiant_vote], dict):
+            current_votes[nom_identifiant_vote] = {}
+
+        # 5. Enregistrement des choix de vote
+        if vote.choix is not None:
+            current_votes[nom_identifiant_vote]["disponibilite"] = vote.choix
+        if vote.choix_trajet is not None:
+            current_votes[nom_identifiant_vote]["trajet"] = vote.choix_trajet
+        if vote.second_vote is not None:
+            current_votes[nom_identifiant_vote]["second_vote"] = vote.second_vote
+        if vote.choix_multiple is not None:
+            current_votes[nom_identifiant_vote]["choix_multiple"] = vote.choix_multiple
+
+        # 6. Traçabilité & Métadonnées
+        current_votes[nom_identifiant_vote]["dernier_modificateur"] = utilisateur_connecte
+        current_votes[nom_identifiant_vote]["est_coach"] = is_coach
+
+        doc_ref.set({"votes": current_votes}, merge=True)
+        return {
+            "message": "Vote mis à jour avec succès",
+            "joueur": nom_identifiant_vote,
+            "modifie_par": utilisateur_connecte
+        }
+
+    except Exception as e:
+        print(f"[ERREUR VOTE] {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- SONDAGES (CRUD + NOTIF AUTOMATIQUE) ---
