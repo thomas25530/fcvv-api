@@ -92,6 +92,9 @@ class ConvocationModel(BaseModel):
     est_modification: Optional[bool] = False
 
 
+class BatchConvocationModel(BaseModel):
+    evenements: List[ConvocationModel]
+
 # --- Fonctions utilitaires ---
 def envoyer_notif_push(topic: str, titre: str, corps: str):
     topic = topic.strip()
@@ -604,6 +607,66 @@ def update_convocations(
         return {"status": "updated", "id": match_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/convocations/batch-update/{categorie}")
+def batch_update_convocations(
+    categorie: str,
+    payload: BatchConvocationModel,
+    background_tasks: BackgroundTasks,
+    nom_parent: Optional[str] = Header(None, alias="nom_parent"),
+):
+    check_db()
+    if not nom_parent or not verifier_si_admin(nom_parent):
+        raise HTTPException(status_code=403, detail="Accès refusé")
+
+    try:
+        batch = db.batch()
+        nb_evenements = len(payload.evenements)
+        
+        if nb_evenements == 0:
+            return {"status": "updated", "count": 0}
+
+        premiere_date = ""
+        derniere_date = ""
+
+        for idx, evt in enumerate(payload.evenements):
+            data_dict = evt.model_dump()
+            type_evt = data_dict.get("type", "ENTRAINEMENT").upper()
+            date_brute = data_dict.get("date", "").replace("/", "-")
+            date_evt = data_dict.get("date", "")
+
+            if idx == 0:
+                premiere_date = date_evt
+            if idx == nb_evenements - 1:
+                derniere_date = date_evt
+
+            # Génération automatique de l'ID Firestore
+            heure_ent = data_dict.get("heure", data_dict.get("heure_rdv", "")).replace(":", "h") or "00h00"
+            match_id = f"entrainement_{date_brute}_{heure_ent}".strip("_")
+
+            doc_ref = db.collection(f"convocations_{categorie}").document(match_id)
+            batch.set(doc_ref, data_dict, merge=True)
+
+        # Exécution de la transaction groupée dans Firestore (Max 500 opérations)
+        batch.commit()
+
+        # Envoi d'UNE SEULE notification Push globale
+        titre_notif = f"FCVV - Entraînements ({categorie})"
+        if nb_evenements == 1:
+            corps_notif = f"1 nouvel entraînement a été planifié pour le {premiere_date}."
+        else:
+            corps_notif = f"{nb_evenements} nouveaux entraînements planifiés (du {premiere_date} au {derniere_date})."
+
+        background_tasks.add_task(
+            envoyer_notif_push, categorie, titre_notif, corps_notif
+        )
+
+        return {"status": "updated", "count": nb_evenements}
+
+    except Exception as e:
+        print(f"[ERREUR BATCH ENTRAINEMENTS] {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @app.delete("/convocations/delete/{categorie}/{match_id}")
