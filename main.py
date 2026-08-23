@@ -76,6 +76,7 @@ class ConvocationModel(BaseModel):
     heure: Optional[str] = ""
     lieu: Optional[str] = ""
     entraineurs: Optional[str] = ""
+    notes: Optional[str] = ""
     sondage_classique: Optional[bool] = True
     sondage_trajet: Optional[bool] = False
     sondage_places: Optional[bool] = False  # <-- AJOUTÉ ICI (activer le sondage de places)
