@@ -97,41 +97,81 @@ class BatchConvocationModel(BaseModel):
     evenements: List[ConvocationModel]
 
 # --- Fonctions utilitaires ---
+
+#===============================================================================
+# def envoyer_notif_push(topic: str, titre: str, corps: str):
+#     topic = topic.strip()
+#     try:
+#         android_config = messaging.AndroidConfig(
+#             priority="high",
+#             notification=messaging.AndroidNotification(
+#                 icon="ic_notification",
+#                 color="#1E3A8A",
+#                 channel_id="fcvv_high_priority_v2",
+#                 sound="default",
+#             ),
+#         )
+# 
+#         apns_config = messaging.APNSConfig(
+#             headers={"apns-priority": "10"},
+#             payload=messaging.APNSPayload(
+#                 aps=messaging.Aps(
+#                     alert=messaging.ApsAlert(title=titre, body=corps),
+#                     sound="default",
+#                 )
+#             ),
+#         )
+# 
+#         message = messaging.Message(
+#             notification=messaging.Notification(title=titre, body=corps),
+#             android=android_config,
+#             apns=apns_config,
+#             topic=topic,
+#         )
+# 
+#         response = messaging.send(message)
+#         print(f"[FCM API] envoyé : {response}")
+# 
+#     except Exception as e:
+#         print(f"[FCM ERROR] {e}")
+#===============================================================================
+
 def envoyer_notif_push(topic: str, titre: str, corps: str):
-    topic = topic.strip()
-    try:
-        android_config = messaging.AndroidConfig(
-            priority="high",
-            notification=messaging.AndroidNotification(
-                icon="ic_notification",
-                color="#1E3A8A",
-                channel_id="fcvv_high_priority_v2",
-                sound="default",
-            ),
-        )
+  topic = topic.strip()
 
-        apns_config = messaging.APNSConfig(
-            headers={"apns-priority": "10"},
-            payload=messaging.APNSPayload(
-                aps=messaging.Aps(
-                    alert=messaging.ApsAlert(title=titre, body=corps),
-                    sound="default",
-                )
-            ),
-        )
+  try:
+    android_config = messaging.AndroidConfig(
+        priority="high",
+    )
 
-        message = messaging.Message(
-            notification=messaging.Notification(title=titre, body=corps),
-            android=android_config,
-            apns=apns_config,
-            topic=topic,
-        )
+    apns_config = messaging.APNSConfig(
+        headers={"apns-priority": "10"},
+        payload=messaging.APNSPayload(
+            aps=messaging.Aps(
+                content_available=True,  # Permet le réveil/background processing sur iOS
+            )
+        ),
+    )
 
-        response = messaging.send(message)
-        print(f"[FCM API] envoyé : {response}")
+    # Transmission exclusive via DATA payload pour garantir que le SDK natif garde la main
+    data_payload = {
+        "title": titre,
+        "body": corps,
+        "topic": topic,
+    }
 
-    except Exception as e:
-        print(f"[FCM ERROR] {e}")
+    message = messaging.Message(
+        data=data_payload,
+        android=android_config,
+        apns=apns_config,
+        topic=topic,
+    )
+
+    response = messaging.send(message)
+    print(f"[FCM API] envoye : {response}")
+
+  except Exception as e:
+    print(f"[FCM ERROR] {e}")
 
 
 def obtenir_role_utilisateur(nom_parent: str) -> Optional[str]:
