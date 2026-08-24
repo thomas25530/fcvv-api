@@ -136,42 +136,47 @@ class BatchConvocationModel(BaseModel):
 #         print(f"[FCM ERROR] {e}")
 #===============================================================================
 
-def envoyer_notif_push(topic: str, titre: str, corps: str):
-  topic = topic.strip()
+def envoyer_notif_push(topic: str, titre: str, corps: str, notif_type: str = "notification", match_id: str = None):
+    topic = topic.strip()
 
-  try:
-    android_config = messaging.AndroidConfig(
-        priority="high",
-    )
+    try:
+        android_config = messaging.AndroidConfig(
+            priority="high",
+        )
 
-    apns_config = messaging.APNSConfig(
-        headers={"apns-priority": "10"},
-        payload=messaging.APNSPayload(
-            aps=messaging.Aps(
-                content_available=True,  # Permet le réveil/background processing sur iOS
-            )
-        ),
-    )
+        apns_config = messaging.APNSConfig(
+            headers={"apns-priority": "10"},
+            payload=messaging.APNSPayload(
+                aps=messaging.Aps(
+                    content_available=True,  # Permet le réveil/background processing sur iOS
+                )
+            ),
+        )
 
-    # Transmission exclusive via DATA payload pour garantir que le SDK natif garde la main
-    data_payload = {
-        "title": titre,
-        "body": corps,
-        "topic": topic,
-    }
+        # Transmission via DATA payload incluant le type et l'ID du match optionnel
+        data_payload = {
+            "title": titre,
+            "body": corps,
+            "topic": topic,
+            "open_page": "vestiaire",
+            "categorie": topic,
+            "notif_type": notif_type,
+        }
+        if match_id:
+            data_payload["match_id"] = match_id
 
-    message = messaging.Message(
-        data=data_payload,
-        android=android_config,
-        apns=apns_config,
-        topic=topic,
-    )
+        message = messaging.Message(
+            data=data_payload,
+            android=android_config,
+            apns=apns_config,
+            topic=topic,
+        )
 
-    response = messaging.send(message)
-    print(f"[FCM API] envoye : {response}")
+        response = messaging.send(message)
+        print(f"[FCM API] envoye : {response}")
 
-  except Exception as e:
-    print(f"[FCM ERROR] {e}")
+    except Exception as e:
+        print(f"[FCM ERROR] {e}")
 
 
 def obtenir_role_utilisateur(nom_parent: str) -> Optional[str]:
@@ -288,6 +293,7 @@ def poster_message(
             categorie,
             f"FCVV - Nouveau message ({categorie})",
             f"{message.auteur}: {message.contenu}",
+            notif_type="chat"
         )
 
         return {"message": "Message envoyé avec succès"}
@@ -395,6 +401,7 @@ def create_sondage(
             categorie,
             f"FCVV - Nouveau sondage ({categorie})",
             f"Sondage : {sondage.titre}",
+            notif_type="evenement"
         )
 
         return {"status": "created"}
@@ -642,7 +649,7 @@ def update_convocations(
                 titre_notif = f"FCVV - Nouvel Événement ({categorie})"
 
         background_tasks.add_task(
-            envoyer_notif_push, categorie, titre_notif, corps_notif
+            envoyer_notif_push, categorie, titre_notif, corps_notif, notif_type="evenement", match_id=match_id
         )
 
         return {"status": "updated", "id": match_id}
@@ -699,7 +706,7 @@ def batch_update_convocations(
             corps_notif = f"{nb_evenements} nouveaux entraînements planifiés (du {premiere_date} au {derniere_date})."
 
         background_tasks.add_task(
-            envoyer_notif_push, categorie, titre_notif, corps_notif
+            envoyer_notif_push, categorie, titre_notif, corps_notif, notif_type="evenement"
         )
 
         return {"status": "updated", "count": nb_evenements}
