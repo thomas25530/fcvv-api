@@ -136,7 +136,7 @@ class BatchConvocationModel(BaseModel):
 #         print(f"[FCM ERROR] {e}")
 #===============================================================================
 
-def envoyer_notif_push(topic: str, titre: str, corps: str, notif_type: str = "notification", match_id: str = None):
+def envoyer_notif_push(topic: str, titre: str, corps: str, notif_type: str = "home", match_id: str = None):
     topic = topic.strip()
 
     try:
@@ -148,17 +148,20 @@ def envoyer_notif_push(topic: str, titre: str, corps: str, notif_type: str = "no
             headers={"apns-priority": "10"},
             payload=messaging.APNSPayload(
                 aps=messaging.Aps(
-                    content_available=True,  # Permet le réveil/background processing sur iOS
+                    content_available=True,
                 )
             ),
         )
 
-        # Transmission via DATA payload incluant le type et l'ID du match optionnel
+        # Adaptation dynamique de open_page selon le notif_type
+        # Si notif_type est "manual" ou "home", on cible la page "home"
+        target_page = "home" if notif_type in ["manual", "home"] else "vestiaire"
+
         data_payload = {
             "title": titre,
             "body": corps,
             "topic": topic,
-            "open_page": "vestiaire",
+            "open_page": target_page,  # <--- Redirection dynamique
             "categorie": topic,
             "notif_type": notif_type,
         }
@@ -228,8 +231,14 @@ def envoyer_notification_manuelle(
         raise HTTPException(status_code=403, detail="Accès refusé")
 
     try:
-        envoyer_notif_push(topic=categorie, titre=notif.titre, corps=notif.corps)
-        return {"status": "success", "message": "Notification envoyée avec succès"}
+        # Envoi explicite du type de notification manuelle / home
+        envoyer_notif_push(
+            topic=categorie, 
+            titre=notif.titre, 
+            corps=notif.corps, 
+            notif_type="manual"
+        )
+        return {"status": "success", "message": "Notification envoyee avec succes"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
