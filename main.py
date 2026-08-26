@@ -25,13 +25,11 @@ except Exception as e:
 
 app = FastAPI(title="API FCVV", version="2.1")
 
-
 def check_db():
     if db is None:
         raise HTTPException(
             status_code=500, detail="Base de données Firebase non disponible"
         )
-
 
 # --- Modèles Pydantic ---
 class Vote(BaseModel):
@@ -44,18 +42,15 @@ class Vote(BaseModel):
     choix_multiple: Optional[str] = None
     nombre_de_places: Optional[int] = None  # <-- AJOUTÉ ICI
 
-
 class NotifRequest(BaseModel):
     titre: str
     corps: str
-
 
 class Message(BaseModel):
     auteur: str
     contenu: str
     role: Optional[str] = "PARENT"
     timestamp: Optional[datetime] = None
-
 
 class SondageModel(BaseModel):
     titre: str
@@ -64,7 +59,6 @@ class SondageModel(BaseModel):
     lieu: str
     type: Optional[str] = "entrainement"
     sondage_actif: Optional[bool] = True
-
 
 class ConvocationModel(BaseModel):
     type: Optional[str] = "MATCH"
@@ -91,7 +85,6 @@ class ConvocationModel(BaseModel):
     dernier_commit: Optional[str] = ""
     timestamp_action: Optional[str] = ""
     est_modification: Optional[bool] = False
-
 
 class BatchConvocationModel(BaseModel):
     evenements: List[ConvocationModel]
@@ -136,8 +129,17 @@ class BatchConvocationModel(BaseModel):
 #         print(f"[FCM ERROR] {e}")
 #===============================================================================
 
-def envoyer_notif_push(topic: str, titre: str, corps: str, notif_type: str = "home", match_id: str = None):
+def envoyer_notif_push(
+    topic: str, 
+    titre: str, 
+    corps: str, 
+    notif_type: str = "home", 
+    match_id: str = None,
+    sender: str = None  # Émetteur de l'action
+):
     topic = topic.strip()
+    # Nettoyage strict : "Pierre DUPONT" -> "pierre_dupont"
+    sender_clean = sender.strip().replace(" ", "_").lower() if sender else None
 
     try:
         android_config = messaging.AndroidConfig(
@@ -153,34 +155,44 @@ def envoyer_notif_push(topic: str, titre: str, corps: str, notif_type: str = "ho
             ),
         )
 
-        # Adaptation dynamique de open_page selon le notif_type
-        # Si notif_type est "manual" ou "home", on cible la page "home"
         target_page = "home" if notif_type in ["manual", "home"] else "vestiaire"
 
         data_payload = {
             "title": titre,
             "body": corps,
             "topic": topic,
-            "open_page": target_page,  # <--- Redirection dynamique
+            "open_page": target_page,
             "categorie": topic,
             "notif_type": notif_type,
+            "sender": sender or ""
         }
         if match_id:
             data_payload["match_id"] = match_id
 
-        message = messaging.Message(
-            data=data_payload,
-            android=android_config,
-            apns=apns_config,
-            topic=topic,
-        )
+        # --- CIBLAGE ET FILTRAGE VIA CONDITION FCM ---
+        if sender_clean:
+            # Envoie au topic de la catégorie SAUF à ceux qui possèdent le tag d'exclusion de l'émetteur
+            condition_fcm = f"'{topic}' in topics && !('{topic}_exclure_{sender_clean}' in topics)"
+            message = messaging.Message(
+                data=data_payload,
+                android=android_config,
+                apns=apns_config,
+                condition=condition_fcm,  # <--- Utilisation de la condition à la place de topic
+            )
+        else:
+            # Si pas d'émetteur spécifié, envoi normal sur le topic
+            message = messaging.Message(
+                data=data_payload,
+                android=android_config,
+                apns=apns_config,
+                topic=topic,
+            )
 
         response = messaging.send(message)
-        print(f"[FCM API] envoye : {response}")
+        print(f"[FCM API] envoye avec succes (emetteur '{sender}' exclu) : {response}")
 
     except Exception as e:
         print(f"[FCM ERROR] {e}")
-
 
 def obtenir_role_utilisateur(nom_parent: str) -> Optional[str]:
     if not nom_parent or db is None:
@@ -193,14 +205,11 @@ def obtenir_role_utilisateur(nom_parent: str) -> Optional[str]:
         return data.get("role")
     return None
 
-
 def verifier_si_admin(nom_parent: str) -> bool:
     return obtenir_role_utilisateur(nom_parent) == "ADMIN"
 
-
 def verifier_si_exclu(nom_parent: str) -> bool:
     return obtenir_role_utilisateur(nom_parent) == "EXCLU"
-
 
 def obtenir_joueurs_associes(nom_parent: str) -> list:
     if not nom_parent or db is None:
@@ -213,12 +222,10 @@ def obtenir_joueurs_associes(nom_parent: str) -> list:
         return data.get("joueurs_associes", [])
     return []
 
-
 # --- Routes ---
 @app.get("/")
 def ping():
     return {"status": "ok", "message": "Server is awake"}
-
 
 @app.post("/notifier/{categorie}")
 def envoyer_notification_manuelle(
@@ -241,7 +248,6 @@ def envoyer_notification_manuelle(
         return {"status": "success", "message": "Notification envoyee avec succes"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/chat/{categorie}")
 def get_messages(
@@ -275,7 +281,6 @@ def get_messages(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.post("/chat/{categorie}")
 def poster_message(
     categorie: str, message: Message, background_tasks: BackgroundTasks
@@ -302,13 +307,13 @@ def poster_message(
             categorie,
             f"FCVV - Nouveau message ({categorie})",
             f"{message.auteur}: {message.contenu}",
-            notif_type="chat"
+            notif_type="chat",
+            sender=message.auteur
         )
 
         return {"message": "Message envoyé avec succès"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/sondages/{categorie}")
 def get_sondages_par_categorie(
@@ -323,7 +328,6 @@ def get_sondages_par_categorie(
         return {doc.id: doc.to_dict() for doc in docs}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/voter/{categorie}")
 def enregistrer_vote(
@@ -389,7 +393,6 @@ def enregistrer_vote(
         print(f"[ERREUR VOTE] {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # --- SONDAGES (CRUD) ---
 @app.post("/sondages/create/{categorie}")
 def create_sondage(
@@ -410,13 +413,13 @@ def create_sondage(
             categorie,
             f"FCVV - Nouveau sondage ({categorie})",
             f"Sondage : {sondage.titre}",
-            notif_type="evenement"
+            notif_type="evenement",
+            sender=nom_parent
         )
 
         return {"status": "created"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.put("/sondages/update/{categorie}/{sid}")
 def update_sondage(
@@ -438,7 +441,6 @@ def update_sondage(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.delete("/sondages/delete/{categorie}/{sid}")
 def delete_sondage(
     categorie: str,
@@ -457,7 +459,6 @@ def delete_sondage(
         return {"status": "deleted"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # --- USERS (REGISTER & UNREGISTER) ---
 @app.post("/users/register")
@@ -505,7 +506,6 @@ def register_user(user: dict):
         )
         return {"status": "already_exists"}
 
-
 @app.post("/users/unregister")
 def unregister_user(data: dict):
     check_db()
@@ -549,7 +549,6 @@ def unregister_user(data: dict):
         "status": "unregistered",
         "message": f"Désinscription de la catégorie {categorie} effectuée. Profil conservé.",
     }
-
 
 # --- CONVOCATIONS & ÉVÉNEMENTS ---
 @app.put("/convocations/update/{categorie}/{match_id}")
@@ -658,7 +657,7 @@ def update_convocations(
                 titre_notif = f"FCVV - Nouvel Événement ({categorie})"
 
         background_tasks.add_task(
-            envoyer_notif_push, categorie, titre_notif, corps_notif, notif_type="evenement", match_id=match_id
+            envoyer_notif_push, categorie, titre_notif, corps_notif, notif_type="evenement", match_id=match_id,sender=nom_parent
         )
 
         return {"status": "updated", "id": match_id}
@@ -715,7 +714,7 @@ def batch_update_convocations(
             corps_notif = f"{nb_evenements} nouveaux entraînements planifiés (du {premiere_date} au {derniere_date})."
 
         background_tasks.add_task(
-            envoyer_notif_push, categorie, titre_notif, corps_notif, notif_type="evenement"
+            envoyer_notif_push, categorie, titre_notif, corps_notif, notif_type="evenement",sender=nom_parent
         )
 
         return {"status": "updated", "count": nb_evenements}
@@ -723,8 +722,6 @@ def batch_update_convocations(
     except Exception as e:
         print(f"[ERREUR BATCH ENTRAINEMENTS] {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
 
 @app.delete("/convocations/delete/{categorie}/{match_id}")
 def delete_convocation(
@@ -742,13 +739,11 @@ def delete_convocation(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/convocations/{categorie}")
 def get_convocations(categorie: str):
     check_db()
     docs = db.collection(f"convocations_{categorie}").stream()
     return {doc.id: doc.to_dict() for doc in docs}
-
 
 @app.get("/convocations/{categorie}/{match_id}")
 def get_one_convocation(categorie: str, match_id: str):
@@ -757,7 +752,6 @@ def get_one_convocation(categorie: str, match_id: str):
     if not doc.exists:
         raise HTTPException(status_code=404, detail="Match non trouvé")
     return doc.to_dict()
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
