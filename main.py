@@ -66,6 +66,7 @@ class ConvocationModel(BaseModel):
     adversaire: Optional[str] = ""
     date: Optional[str] = ""
     heure_rdv: Optional[str] = ""
+    heure_sur_place: Optional[str] = ""
     heure_coup_envoi: Optional[str] = ""
     heure: Optional[str] = ""
     lieu: Optional[str] = ""
