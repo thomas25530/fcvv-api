@@ -1,7 +1,7 @@
 import json
 import os
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Union, Dict, Any
 
 import firebase_admin
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
@@ -81,7 +81,7 @@ class ConvocationModel(BaseModel):
     options_sondage: List[str] = Field(default_factory=list)
     activer_convocation: Optional[bool] = False
     sondage_actif: Optional[bool] = True
-    joueurs_convoques: List[str] = Field(default_factory=list)
+    joueurs_convoques: List[Union[str, Dict[str, Any]]] = Field(default_factory=list)
     dernier_commit: Optional[str] = ""
     timestamp_action: Optional[str] = ""
     est_modification: Optional[bool] = False
