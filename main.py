@@ -551,7 +551,7 @@ def delete_sondage(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- USERS (REGISTER & UNREGISTER) ---
+# --- USERS (REGISTER, UNREGISTER & GET) ---
 @app.post("/users/register")
 def register_user(user: dict):
     check_db()
@@ -566,8 +566,11 @@ def register_user(user: dict):
     doc_ref = db.collection("users").document(id_utilisateur)
     doc_snapshot = doc_ref.get()
 
+    # On structure chaque joueur avec sa catégorie associée pour éviter les mélanges
+    nouveau_joueur_obj = {"nom": nouveau_joueur, "categorie": categorie} if nouveau_joueur and categorie else None
+
     if not doc_snapshot.exists:
-        joueurs_list = [nouveau_joueur] if nouveau_joueur else []
+        joueurs_list = [nouveau_joueur_obj] if nouveau_joueur_obj else []
         categories_list = [categorie] if categorie else []
 
         doc_ref.set(
@@ -582,8 +585,15 @@ def register_user(user: dict):
     else:
         data = doc_snapshot.to_dict()
         joueurs_list = data.get("joueurs_associes", [])
-        if nouveau_joueur and nouveau_joueur not in joueurs_list:
-            joueurs_list.append(nouveau_joueur)
+        
+        # Gestion de la rétrocompatibilité si l'ancienne structure contenait de simples chaînes de caractères
+        joueurs_list = [
+            {"nom": j, "categorie": categorie} if isinstance(j, str) else j 
+            for j in joueurs_list
+        ]
+
+        if nouveau_joueur_obj and nouveau_joueur_obj not in joueurs_list:
+            joueurs_list.append(nouveau_joueur_obj)
 
         categories_list = data.get("categories_associees", [])
         if categorie and categorie not in categories_list:
@@ -602,7 +612,7 @@ def unregister_user(data: dict):
     check_db()
     raw_nom = data.get("nom", "").strip()
     categorie = data.get("categorie", "").strip()
-    joueur_associe = data.get("joueur_associe", "")
+    joueur_associe = data.get("joueur_associe", "").strip()
     joueurs_a_retirer = data.get("joueurs_a_retirer", [])
 
     if joueur_associe and not joueurs_a_retirer:
@@ -622,12 +632,22 @@ def unregister_user(data: dict):
     categories_list = user_data.get("categories_associees", [])
     joueurs_list = user_data.get("joueurs_associes", [])
 
-    if categorie and categorie in categories_list:
-        categories_list.remove(categorie)
+    # Normalisation pour supporter l'ancienne et la nouvelle structure
+    joueurs_list = [
+        {"nom": j, "categorie": categorie} if isinstance(j, str) else j 
+        for j in joueurs_list
+    ]
 
-    for j in joueurs_a_retirer:
-        if j in joueurs_list:
-            joueurs_list.remove(j)
+    # Suppression des joueurs ciblés pour cette catégorie (ou par nom)
+    joueurs_list = [
+        j for j in joueurs_list 
+        if not (j.get("nom") in joueurs_a_retirer or (categorie and j.get("categorie") == categorie and j.get("nom") in joueurs_a_retirer))
+    ]
+
+    # Si plus aucun joueur n'est associé à cette catégorie, on peut retirer la catégorie de la liste
+    restant_dans_categorie = any(j.get("categorie") == categorie for j in joueurs_list)
+    if categorie and categorie in categories_list and not restant_dans_categorie:
+        categories_list.remove(categorie)
 
     doc_ref.update(
         {
@@ -640,6 +660,36 @@ def unregister_user(data: dict):
         "status": "unregistered",
         "message": f"Désinscription de la catégorie {categorie} effectuée. Profil conservé.",
     }
+
+@app.get("/users")
+def get_users(
+    categorie: Optional[str] = None,
+    nom_parent: Optional[str] = Header(None, alias="nom_parent")
+):
+    check_db()
+    if nom_parent and not verifier_si_admin(nom_parent):
+        raise HTTPException(status_code=403, detail="Accès refusé : réservé aux administrateurs")
+
+    try:
+        query = db.collection("users")
+        if categorie:
+            query = query.where("categories_associees", "array_contains", categorie)
+        
+        docs = query.stream()
+        results = []
+        for doc in docs:
+            data = doc.to_dict()
+            # Normalisation à la volée pour l'affichage si l'ancien format string existe encore
+            if "joueurs_associes" in data:
+                data["joueurs_associes"] = [
+                    {"nom": j, "categorie": categorie or ""} if isinstance(j, str) else j 
+                    for j in data["joueurs_associes"]
+                ]
+            results.append({"id": doc.id, **data})
+        return results
+    except Exception as e:
+        print(f"[ERREUR USERS GET] {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # --- CONVOCATIONS & ÉVÉNEMENTS ---
 @app.put("/convocations/update/{categorie}/{match_id}")
