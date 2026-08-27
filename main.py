@@ -19,7 +19,7 @@ try:
         cred = credentials.Certificate(json.loads(firebase_config_str))
         firebase_admin.initialize_app(cred)
         db = firestore.client()
-        print("Firebase initialisé avec succès")
+        print("Firebase initialise avec succes")
 except Exception as e:
     print(f"Erreur critique initialisation Firebase: {e}")
 
@@ -51,6 +51,9 @@ class Message(BaseModel):
     contenu: str
     role: Optional[str] = "PARENT"
     timestamp: Optional[datetime] = None
+
+class EchangeMessage(BaseModel):
+    contenu: str
 
 class SondageModel(BaseModel):
     titre: str
@@ -148,10 +151,16 @@ def envoyer_notif_push(
         )
 
         apns_config = messaging.APNSConfig(
-            headers={"apns-priority": "10"},
+            headers={
+                "apns-priority": "10",
+            },
             payload=messaging.APNSPayload(
                 aps=messaging.Aps(
-                    content_available=True,
+                    alert=messaging.ApsAlert(
+                        title=titre,
+                        body=corps,
+                    ),
+                    sound="default",
                 )
             ),
         )
@@ -282,6 +291,30 @@ def get_messages(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/echange/{categorie}")
+def get_echange_messages(categorie: str, nom_parent: Optional[str] = Header(None, alias="nom_parent")):
+    check_db()
+    parent = (nom_parent or "").strip()
+    if not parent:
+        raise HTTPException(status_code=400, detail="Identifiant de l'utilisateur manquant")
+    if verifier_si_exclu(parent):
+        raise HTTPException(status_code=403, detail="Accès refusé : compte exclu")
+
+    try:
+        docs = db.collection("echanges").document(categorie).collection("messages").order_by("timestamp", direction=firestore.Query.ASCENDING).limit(100).stream()
+        
+        return [
+            {
+                "id": doc.id,
+                **doc.to_dict(),
+                "timestamp": doc.to_dict().get("timestamp").isoformat() if hasattr(doc.to_dict().get("timestamp"), "isoformat") else datetime.now(timezone.utc).isoformat()
+            }
+            for doc in docs
+        ]
+    except Exception as e:
+        print(f"[ERREUR ECHANGE GET] {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/chat/{categorie}")
 def poster_message(
     categorie: str, message: Message, background_tasks: BackgroundTasks
@@ -314,6 +347,63 @@ def poster_message(
 
         return {"message": "Message envoyé avec succès"}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/echange/{categorie}")
+def poster_echange_message(categorie: str, message: EchangeMessage, background_tasks: BackgroundTasks, nom_parent: Optional[str] = Header(None, alias="nom_parent")):
+    check_db()
+    parent = (nom_parent or "").strip()
+    if not parent:
+        raise HTTPException(status_code=400, detail="Identifiant de l'utilisateur manquant")
+    if verifier_si_exclu(parent):
+        raise HTTPException(status_code=403, detail="Action interdite : compte exclu")
+
+    contenu = message.contenu.strip()
+    if not contenu:
+        raise HTTPException(status_code=400, detail="Le message ne peut pas être vide")
+
+    try:
+        role = obtenir_role_utilisateur(parent) or "PARENT"
+        msg_data = {"auteur": parent, "contenu": contenu, "role": role, "timestamp": firestore.SERVER_TIMESTAMP}
+        db.collection("echanges").document(categorie).collection("messages").add(msg_data)
+
+        background_tasks.add_task(
+            envoyer_notif_push, categorie, f"FCVV - Nouveau message ({categorie})", f"{parent}: {contenu}", notif_type="echange", sender=parent
+        )
+        return {"status": "success", "message": "Message envoyé avec succès"}
+
+    except Exception as e:
+        print(f"[ERREUR ECHANGE POST] {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/echange/{categorie}/{message_id}")
+def delete_echange_message(categorie: str, message_id: str, nom_parent: Optional[str] = Header(None, alias="nom_parent")):
+    check_db()
+    parent = (nom_parent or "").strip()
+    if not parent:
+        raise HTTPException(status_code=400, detail="Identifiant de l'utilisateur manquant")
+    if verifier_si_exclu(parent):
+        raise HTTPException(status_code=403, detail="Action interdite : compte exclu")
+
+    try:
+        ref = db.collection("echanges").document(categorie).collection("messages").document(message_id)
+        doc = ref.get()
+        if not doc.exists:
+            raise HTTPException(status_code=404, detail="Message non trouvé")
+
+        est_admin = verifier_si_admin(parent)
+        auteur = doc.to_dict().get("auteur", "").strip().lower()
+
+        if not est_admin and auteur != parent.lower():
+            raise HTTPException(status_code=403, detail="Vous ne pouvez supprimer que vos propres messages")
+
+        ref.delete()
+        return {"status": "deleted", "message": f"Message supprimé {'par un administrateur' if est_admin else 'avec succès'}"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERREUR ECHANGE DELETE] {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/sondages/{categorie}")
