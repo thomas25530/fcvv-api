@@ -612,11 +612,6 @@ def unregister_user(data: dict):
     check_db()
     raw_nom = data.get("nom", "").strip()
     categorie = data.get("categorie", "").strip()
-    joueur_associe = data.get("joueur_associe", "").strip()
-    joueurs_a_retirer = data.get("joueurs_a_retirer", [])
-
-    if joueur_associe and not joueurs_a_retirer:
-        joueurs_a_retirer = [joueur_associe]
 
     if not raw_nom:
         raise HTTPException(status_code=400, detail="Nom d'utilisateur requis")
@@ -638,16 +633,22 @@ def unregister_user(data: dict):
         for j in joueurs_list
     ]
 
-    # Suppression des joueurs ciblés pour cette catégorie (ou par nom)
-    joueurs_list = [
-        j for j in joueurs_list 
-        if not (j.get("nom") in joueurs_a_retirer or (categorie and j.get("categorie") == categorie and j.get("nom") in joueurs_a_retirer))
-    ]
-
-    # Si plus aucun joueur n'est associé à cette catégorie, on peut retirer la catégorie de la liste
-    restant_dans_categorie = any(j.get("categorie") == categorie for j in joueurs_list)
-    if categorie and categorie in categories_list and not restant_dans_categorie:
-        categories_list.remove(categorie)
+    # Si une catégorie est spécifiée, on supprime TOUS les joueurs rattachés à cette catégorie
+    if categorie:
+        joueurs_list = [j for j in joueurs_list if j.get("categorie") != categorie]
+        if categorie in categories_list:
+            categories_list.remove(categorie)
+    else:
+        # Fallback si l'application envoie des "joueurs_a_retirer" spécifiques sans catégorie
+        joueurs_a_retirer = data.get("joueurs_a_retirer", [])
+        joueur_associe = data.get("joueur_associe", "").strip()
+        if joueur_associe and not joueurs_a_retirer:
+            joueurs_a_retirer = [joueur_associe]
+            
+        joueurs_list = [
+            j for j in joueurs_list 
+            if j.get("nom") not in joueurs_a_retirer
+        ]
 
     doc_ref.update(
         {
@@ -658,7 +659,7 @@ def unregister_user(data: dict):
 
     return {
         "status": "unregistered",
-        "message": f"Désinscription de la catégorie {categorie} effectuée. Profil conservé.",
+        "message": f"Désinscription de la catégorie {categorie} et nettoyage des joueurs associés effectués.",
     }
 
 @app.get("/users")
