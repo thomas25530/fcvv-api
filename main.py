@@ -901,6 +901,67 @@ def get_users(
     except Exception as e:
         print(f"[ERREUR USERS GET] {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+@app.get("/users/role")
+def get_user_role(
+    categorie: str,
+    nom_parent: Optional[str] = Header(None, alias="nom_parent")
+):
+    check_db()
+
+    if not nom_parent:
+        raise HTTPException(
+            status_code=400,
+            detail="Identifiant de l'utilisateur manquant"
+        )
+
+    if not categorie:
+        raise HTTPException(
+            status_code=400,
+            detail="Catégorie manquante"
+        )
+
+    try:
+        id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
+
+        doc = db.collection("users").document(id_utilisateur).get()
+
+        if not doc.exists:
+            raise HTTPException(
+                status_code=404,
+                detail="Utilisateur inconnu"
+            )
+
+        data = doc.to_dict()
+
+        roles = data.get("roles_par_categorie", {})
+
+        role = str(
+            roles.get(categorie, "EXCLU")
+        ).strip().upper()
+
+        print(
+            f"[ROLE GET] utilisateur={nom_parent} "
+            f"categorie={categorie} "
+            f"role={role}"
+        )
+
+        return {
+            "nom_parent": nom_parent,
+            "categorie": categorie,
+            "role": role
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        print(f"[ERREUR ROLE GET] {e}")
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 ##########################
 ######## CONVOCATIONS & EVENEMENTS
