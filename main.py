@@ -740,8 +740,11 @@ def get_users(
     nom_parent: Optional[str] = Header(None, alias="nom_parent")
 ):
     check_db()
-    if not nom_parent or not verifier_si_admin(nom_parent, categorie or ""):
-        raise HTTPException(status_code=403, detail="Accès refusé : réservé aux administrateurs")
+    if role not in ("ADMIN", "PARENT"):
+        raise HTTPException(
+            status_code=403,
+            detail="Accès refusé pour ce rôle"
+        )
 
     try:
         query = db.collection("users")
