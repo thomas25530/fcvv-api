@@ -146,25 +146,89 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
 
     check_db()
 
+    # ==========================================================
+    # DONNÉES REÇUES
+    # ==========================================================
+
     raw_nom = user.get("nom", "").strip()
     categorie = user.get("categorie", "").strip()
-    nouveau_joueur = user.get("joueur_associe", "").strip()
+
+    # Ancien format : un seul joueur
+    nouveau_joueur = user.get(
+        "joueur_associe",
+        ""
+    ).strip()
+
+    # Nouveau format : plusieurs joueurs
+    joueurs_associes = user.get(
+        "joueurs_associes",
+        []
+    )
+
+    # Sécurité : on s'assure que c'est bien une liste
+    if not isinstance(joueurs_associes, list):
+        joueurs_associes = []
+
+    # Nettoyage de la liste
+    joueurs_associes = [
+        str(j).strip()
+        for j in joueurs_associes
+        if str(j).strip()
+    ]
+
+    # ==========================================================
+    # COMPATIBILITÉ AVEC L'ANCIEN FORMAT
+    #
+    # Si le client envoie encore :
+    # "joueur_associe": "COULOT Quentin"
+    #
+    # on transforme automatiquement en :
+    # "joueurs_associes": ["COULOT Quentin"]
+    # ==========================================================
+
+    if not joueurs_associes and nouveau_joueur:
+        joueurs_associes = [
+            nouveau_joueur
+        ]
+
+    # ==========================================================
+    # VALIDATION
+    # ==========================================================
 
     if not raw_nom or not categorie:
+
         raise HTTPException(
             status_code=400,
             detail="Nom et Catégorie requis"
         )
 
-    id_utilisateur = raw_nom.replace(" ", "_").lower()
+    # ==========================================================
+    # IDENTIFIANT FIRESTORE
+    #
+    # Exemple :
+    # "Quentin Dominati"
+    # devient :
+    # "quentin_dominati"
+    # ==========================================================
 
-    doc_ref = db.collection("users").document(id_utilisateur)
+    id_utilisateur = (
+        raw_nom
+        .replace(" ", "_")
+        .lower()
+    )
+
+    doc_ref = db.collection(
+        "users"
+    ).document(
+        id_utilisateur
+    )
+
     doc_snapshot = doc_ref.get()
 
     est_premiere_demande = False
 
     # ==========================================================
-    # 🟢 NOUVEL UTILISATEUR
+    # 🟢 CAS 1 : NOUVEL UTILISATEUR
     # ==========================================================
 
     if not doc_snapshot.exists:
@@ -174,26 +238,30 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
         }
 
         joueurs_dict = {
-            categorie: [nouveau_joueur] if nouveau_joueur else []
+            categorie: joueurs_associes
         }
 
         doc_ref.set({
             "nom": raw_nom,
+
             "roles_par_categorie": roles_dict,
+
             "joueurs_par_categorie": joueurs_dict,
+
             "created_at": firestore.SERVER_TIMESTAMP
         })
 
         est_premiere_demande = True
 
         print(
-            f"[REGISTER] Nouveau parent={raw_nom} "
-            f"categorie={categorie} "
-            f"joueur={nouveau_joueur}"
+            f"[REGISTER] Nouveau parent="
+            f"{raw_nom} | "
+            f"categorie={categorie} | "
+            f"joueurs={joueurs_associes}"
         )
 
     # ==========================================================
-    # 🟡 UTILISATEUR EXISTANT
+    # 🟡 CAS 2 : UTILISATEUR EXISTANT
     # ==========================================================
 
     else:
@@ -210,31 +278,49 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
             {}
         )
 
-        # ------------------------------------------------------
-        # 🔴 CAS 1 : CATÉGORIE DÉJÀ EXISTANTE
+        # Sécurité supplémentaire :
+        # on s'assure que les dictionnaires sont bien des dicts.
+
+        if not isinstance(roles_dict, dict):
+            roles_dict = {}
+
+        if not isinstance(joueurs_dict, dict):
+            joueurs_dict = {}
+
+        # ======================================================
+        # 🔴 CAS 2A : CATÉGORIE DÉJÀ EXISTANTE
         #
-        # Toute nouvelle demande est considérée comme
-        # une tentative d'usurpation.
+        # TOUTE nouvelle demande pour cette catégorie
+        # est considérée comme une tentative d'usurpation.
         #
-        # Même si le joueur demandé est déjà associé.
-        # ------------------------------------------------------
+        # Peu importe :
+        # - le joueur demandé
+        # - si le joueur est déjà associé
+        # - si la liste est identique
+        # - si la liste est différente
+        # ======================================================
 
         if categorie in roles_dict:
 
-            liste_joueurs_cat = joueurs_dict.get(
+            liste_joueurs_existants = joueurs_dict.get(
                 categorie,
                 []
             )
 
-            if not isinstance(liste_joueurs_cat, list):
-                liste_joueurs_cat = []
+            if not isinstance(
+                liste_joueurs_existants,
+                list
+            ):
+                liste_joueurs_existants = []
 
             print(
-                f"[SECURITE] 🚨 TENTATIVE D'USURPATION "
-                f"possible : parent={raw_nom} "
-                f"categorie={categorie} "
-                f"joueur_demande={nouveau_joueur} "
-                f"joueurs_deja_associes={liste_joueurs_cat}"
+                f"[SECURITE] 🚨 "
+                f"TENTATIVE D'USURPATION POSSIBLE : "
+                f"parent={raw_nom} | "
+                f"categorie={categorie} | "
+                f"joueurs_demandes={joueurs_associes} | "
+                f"joueurs_deja_associes="
+                f"{liste_joueurs_existants}"
             )
 
             raise HTTPException(
@@ -242,28 +328,24 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
                 detail="USURPATION_IDENTITE"
             )
 
-        # ------------------------------------------------------
-        # 🟢 CAS 2 : CATÉGORIE NOUVELLE POUR CET UTILISATEUR
+        # ======================================================
+        # 🟢 CAS 2B : NOUVELLE CATÉGORIE
         #
-        # Le parent peut faire une nouvelle demande pour
-        # une catégorie à laquelle il n'est pas encore associé.
-        # ------------------------------------------------------
+        # L'utilisateur existe déjà mais cette catégorie
+        # n'existe pas encore dans son compte.
+        #
+        # La nouvelle demande est donc autorisée.
+        # ======================================================
 
         else:
 
             roles_dict[categorie] = "EXCLU"
 
-            liste_joueurs_cat = []
-
-            if nouveau_joueur:
-                liste_joueurs_cat.append(
-                    nouveau_joueur
-                )
-
-            joueurs_dict[categorie] = liste_joueurs_cat
+            joueurs_dict[categorie] = joueurs_associes
 
             doc_ref.update({
                 "roles_par_categorie": roles_dict,
+
                 "joueurs_par_categorie": joueurs_dict
             })
 
@@ -271,15 +353,18 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
 
             print(
                 f"[REGISTER] Nouvelle catégorie : "
-                f"parent={raw_nom} "
-                f"categorie={categorie} "
-                f"joueur={nouveau_joueur}"
+                f"parent={raw_nom} | "
+                f"categorie={categorie} | "
+                f"joueurs={joueurs_associes}"
             )
 
     # ==========================================================
     # 📧 EMAIL ADMIN
     #
-    # Uniquement pour une vraie nouvelle demande.
+    # Uniquement lorsqu'il s'agit réellement d'une nouvelle
+    # inscription ou d'une nouvelle catégorie.
+    #
+    # Un seul email, même avec plusieurs joueurs.
     # ==========================================================
 
     if est_premiere_demande:
@@ -291,8 +376,15 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
             id_utilisateur=id_utilisateur
         )
 
+        print(
+            f"[REGISTER] 📧 "
+            f"Notification admin programmée : "
+            f"parent={raw_nom} | "
+            f"categorie={categorie}"
+        )
+
     # ==========================================================
-    # ✅ RÉPONSE
+    # ✅ RÉPONSE API
     # ==========================================================
 
     return {
