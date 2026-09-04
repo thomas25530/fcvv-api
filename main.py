@@ -166,6 +166,7 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
     # ==========================================================
     # 🟢 NOUVEL UTILISATEUR
     # ==========================================================
+
     if not doc_snapshot.exists:
 
         roles_dict = {
@@ -194,54 +195,60 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
     # ==========================================================
     # 🟡 UTILISATEUR EXISTANT
     # ==========================================================
+
     else:
 
         data = doc_snapshot.to_dict()
 
-        roles_dict = data.get("roles_par_categorie", {})
-        joueurs_dict = data.get("joueurs_par_categorie", {})
+        roles_dict = data.get(
+            "roles_par_categorie",
+            {}
+        )
+
+        joueurs_dict = data.get(
+            "joueurs_par_categorie",
+            {}
+        )
 
         # ------------------------------------------------------
-        # CAS 1 : catégorie déjà existante
+        # 🔴 CAS 1 : CATÉGORIE DÉJÀ EXISTANTE
+        #
+        # Toute nouvelle demande est considérée comme
+        # une tentative d'usurpation.
+        #
+        # Même si le joueur demandé est déjà associé.
         # ------------------------------------------------------
+
         if categorie in roles_dict:
 
-            liste_joueurs_cat = joueurs_dict.get(categorie, [])
+            liste_joueurs_cat = joueurs_dict.get(
+                categorie,
+                []
+            )
 
-            # Sécurité : on s'assure d'avoir une vraie liste
             if not isinstance(liste_joueurs_cat, list):
                 liste_joueurs_cat = []
 
-            # Ajouter le joueur s'il est nouveau
-            if nouveau_joueur and nouveau_joueur not in liste_joueurs_cat:
+            print(
+                f"[SECURITE] 🚨 TENTATIVE D'USURPATION "
+                f"possible : parent={raw_nom} "
+                f"categorie={categorie} "
+                f"joueur_demande={nouveau_joueur} "
+                f"joueurs_deja_associes={liste_joueurs_cat}"
+            )
 
-                liste_joueurs_cat.append(nouveau_joueur)
-
-                joueurs_dict[categorie] = liste_joueurs_cat
-
-                doc_ref.update({
-                    "joueurs_par_categorie": joueurs_dict
-                })
-
-                print(
-                    f"[REGISTER] Joueur ajouté : "
-                    f"parent={raw_nom} "
-                    f"categorie={categorie} "
-                    f"joueur={nouveau_joueur}"
-                )
-
-            else:
-
-                print(
-                    f"[REGISTER] Aucun ajout : "
-                    f"parent={raw_nom} "
-                    f"categorie={categorie} "
-                    f"joueur={nouveau_joueur}"
-                )
+            raise HTTPException(
+                status_code=403,
+                detail="USURPATION_IDENTITE"
+            )
 
         # ------------------------------------------------------
-        # CAS 2 : catégorie nouvelle pour cet utilisateur
+        # 🟢 CAS 2 : CATÉGORIE NOUVELLE POUR CET UTILISATEUR
+        #
+        # Le parent peut faire une nouvelle demande pour
+        # une catégorie à laquelle il n'est pas encore associé.
         # ------------------------------------------------------
+
         else:
 
             roles_dict[categorie] = "EXCLU"
@@ -249,7 +256,9 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
             liste_joueurs_cat = []
 
             if nouveau_joueur:
-                liste_joueurs_cat.append(nouveau_joueur)
+                liste_joueurs_cat.append(
+                    nouveau_joueur
+                )
 
             joueurs_dict[categorie] = liste_joueurs_cat
 
@@ -268,8 +277,11 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
             )
 
     # ==========================================================
-    # 📧 EMAIL : uniquement pour une première demande de catégorie
+    # 📧 EMAIL ADMIN
+    #
+    # Uniquement pour une vraie nouvelle demande.
     # ==========================================================
+
     if est_premiere_demande:
 
         background_tasks.add_task(
@@ -278,6 +290,10 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
             categorie=categorie,
             id_utilisateur=id_utilisateur
         )
+
+    # ==========================================================
+    # ✅ RÉPONSE
+    # ==========================================================
 
     return {
         "status": "success",
