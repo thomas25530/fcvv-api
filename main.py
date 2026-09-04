@@ -55,6 +55,30 @@ def verifier_si_exclu(nom_parent: str, categorie: str) -> bool:
     roles = doc.to_dict().get("roles_par_categorie", {})
     return roles.get(categorie, "EXCLU") == "EXCLU"
 
+def verifier_si_autorise(nom_parent: str, categorie: str) -> bool:
+    """Autorise uniquement les utilisateurs PARENT ou ADMIN."""
+
+    if not nom_parent or db is None:
+        return False
+
+    id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
+
+    doc = db.collection("users").document(id_utilisateur).get()
+
+    if not doc.exists:
+        return False
+
+    roles = doc.to_dict().get("roles_par_categorie", {})
+
+    if not isinstance(roles, dict):
+        return False
+
+    role = str(
+        roles.get(categorie, "EXCLU")
+    ).strip().upper()
+
+    return role in ("PARENT", "ADMIN")
+
 def verifier_si_admin(nom_parent: str, categorie: str) -> bool:
     """Vérifie si l'utilisateur est ADMIN ou COACH pour la catégorie."""
     if not nom_parent or db is None:
@@ -679,7 +703,7 @@ def get_messages(
 ):
     check_db()
     # 🔒 Sécurité : Header obligatoire et vérification EXCLU
-    if not nom_parent or verifier_si_exclu(nom_parent, categorie):
+    if not nom_parent or not verifier_si_autorise(nom_parent, categorie):
         return []
 
     try:
@@ -712,7 +736,7 @@ def get_echange_messages(categorie: str, nom_parent: Optional[str] = Header(None
     parent = (nom_parent or "").strip()
 
     # 🔒 Sécurité : Header obligatoire et vérification EXCLU
-    if not parent or verifier_si_exclu(parent, categorie):
+    if not parent or not verifier_si_autorise(parent, categorie):
         return []
 
     try:
@@ -738,9 +762,10 @@ def poster_message(
     categorie: str, message: Message, background_tasks: BackgroundTasks
 ):
     check_db()
-    if verifier_si_exclu(message.auteur, categorie):
+    if not verifier_si_autorise(message.auteur, categorie):
         raise HTTPException(
-            status_code=403, detail="Action interdite : compte exclu"
+            status_code=403,
+            detail="Action interdite : accès non validé"
         )
 
     try:
@@ -778,8 +803,11 @@ def poster_echange_message(
     parent = (nom_parent or "").strip()
     if not parent:
         raise HTTPException(status_code=400, detail="Identifiant de l'utilisateur manquant")
-    if verifier_si_exclu(parent, categorie):
-        raise HTTPException(status_code=403, detail="Action interdite : compte exclu")
+    if not verifier_si_autorise(parent, categorie):
+        raise HTTPException(
+            status_code=403,
+            detail="Action interdite : accès non validé"
+        )
 
     contenu = message.contenu.strip()
     if not contenu:
@@ -822,8 +850,11 @@ def delete_echange_message(
     parent = (nom_parent or "").strip()
     if not parent:
         raise HTTPException(status_code=400, detail="Identifiant de l'utilisateur manquant")
-    if verifier_si_exclu(parent, categorie):
-        raise HTTPException(status_code=403, detail="Action interdite : compte exclu")
+    if not verifier_si_autorise(parent, categorie):
+        raise HTTPException(
+            status_code=403,
+            detail="Action interdite : accès non validé"
+        )
 
     try:
         ref = db.collection("echanges").document(categorie).collection("messages").document(message_id)
@@ -855,7 +886,7 @@ def get_sondages_par_categorie(
 ):
     check_db()
     # 🔒 Sécurité : Header obligatoire et vérification EXCLU
-    if not nom_parent or verifier_si_exclu(nom_parent, categorie):
+    if not nom_parent or not verifier_si_autorise(nom_parent, categorie):
         return {}
 
     try:
@@ -878,8 +909,11 @@ def enregistrer_vote(
             status_code=400, detail="Identifiant de l'utilisateur manquant"
         )
 
-    if verifier_si_exclu(utilisateur_connecte, categorie):
-        raise HTTPException(status_code=403, detail="Action interdite : compte exclu")
+    if not verifier_si_autorise(utilisateur_connecte, categorie):
+        raise HTTPException(
+            status_code=403,
+            detail="Action interdite : accès non validé"
+        )
 
     try:
         nom_identifiant_vote = (vote.nom_joueur_concerne or "").strip()
@@ -1032,34 +1066,6 @@ def unregister_user(data: dict):
         "message": f"Désinscription de la catégorie {categorie} effectuée.",
     }
 
-@app.get("/users")
-def get_users(
-    categorie: Optional[str] = None,
-    nom_parent: Optional[str] = Header(None, alias="nom_parent")
-):
-    check_db()
-    if role not in ("ADMIN", "PARENT"):
-        raise HTTPException(
-            status_code=403,
-            detail="Accès refusé pour ce rôle"
-        )
-
-    try:
-        query = db.collection("users")
-        docs = query.stream()
-        results = []
-        for doc in docs:
-            data = doc.to_dict()
-            if categorie:
-                roles = data.get("roles_par_categorie", {})
-                if categorie in roles:
-                    results.append({"id": doc.id, **data})
-            else:
-                results.append({"id": doc.id, **data})
-        return results
-    except Exception as e:
-        print(f"[ERREUR USERS GET] {e}")
-        raise HTTPException(status_code=500, detail=str(e))
     
 @app.get("/users/role")
 def get_user_role(
@@ -1316,7 +1322,7 @@ def get_convocations(
 ):
     check_db()
     # 🔒 Sécurité : Header obligatoire et vérification EXCLU
-    if not nom_parent or verifier_si_exclu(nom_parent, categorie):
+    if not nom_parent or not verifier_si_autorise(nom_parent, categorie):
         return {}
 
     docs = db.collection(f"convocations_{categorie}").stream()
@@ -1330,8 +1336,11 @@ def get_one_convocation(
 ):
     check_db()
     # 🔒 Sécurité : Vérification du statut EXCLU pour l'événement unitaire
-    if not nom_parent or verifier_si_exclu(nom_parent, categorie):
-        raise HTTPException(status_code=403, detail="Accès refusé : compte exclu ou non identifié")
+    if not nom_parent or not verifier_si_autorise(nom_parent, categorie):
+        raise HTTPException(
+            status_code=403,
+            detail="Accès refusé : accès non validé ou utilisateur non identifié"
+        )
 
     doc = db.collection(f"convocations_{categorie}").document(match_id).get()
     if not doc.exists:
