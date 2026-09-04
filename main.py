@@ -234,7 +234,7 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
     if not doc_snapshot.exists:
 
         roles_dict = {
-            categorie: "EXCLU"
+            categorie: "ATTENTE"
         }
 
         joueurs_dict = {
@@ -339,7 +339,7 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
 
         else:
 
-            roles_dict[categorie] = "EXCLU"
+            roles_dict[categorie] = "ATTENTE"
 
             joueurs_dict[categorie] = joueurs_associes
 
@@ -389,7 +389,7 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
 
     return {
         "status": "success",
-        "role": "EXCLU"
+        "role": "ATTENTE"
     }
 
 # 🆕 AJOUT : Récupération du rôle d'un utilisateur pour une catégorie donnée
