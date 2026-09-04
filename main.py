@@ -210,29 +210,93 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
     return {"status": "success", "role": "EXCLU"}
 
 # 🆕 AJOUT : Récupération du rôle d'un utilisateur pour une catégorie donnée
-@app.get("/users/role")
-def get_user_role(
-    categorie: str = Query(...),
+@app.get("/users")
+def get_users(
+    categorie: Optional[str] = None,
     nom_parent: Optional[str] = Header(None, alias="nom_parent")
 ):
     check_db()
+
     if not nom_parent:
-        raise HTTPException(status_code=400, detail="Identifiant de l'utilisateur manquant")
+        raise HTTPException(
+            status_code=400,
+            detail="Identifiant de l'utilisateur manquant"
+        )
 
-    id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
-    doc = db.collection("users").document(id_utilisateur).get()
+    if not categorie:
+        raise HTTPException(
+            status_code=400,
+            detail="Catégorie manquante"
+        )
 
-    if not doc.exists:
-        return {"nom": nom_parent, "categorie": categorie, "role": "EXCLU"}
+    try:
+        # Récupération du rôle réel dans Firebase
+        id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
 
-    roles = doc.to_dict().get("roles_par_categorie", {})
-    role = roles.get(categorie, "EXCLU")
+        doc = db.collection("users").document(id_utilisateur).get()
 
-    return {
-        "nom": nom_parent,
-        "categorie": categorie,
-        "role": role
-    }
+        if not doc.exists:
+            raise HTTPException(
+                status_code=403,
+                detail="Utilisateur inconnu"
+            )
+
+        data_utilisateur = doc.to_dict()
+        roles = data_utilisateur.get("roles_par_categorie", {})
+
+        role = str(
+            roles.get(categorie, "EXCLU")
+        ).strip().upper()
+
+        print(
+            f"[USERS GET] utilisateur={nom_parent} "
+            f"categorie={categorie} role={role}"
+        )
+
+        # SEULS ADMIN et PARENT peuvent voir les membres
+        if role not in ("ADMIN", "PARENT"):
+            raise HTTPException(
+                status_code=403,
+                detail="Accès refusé pour ce rôle"
+            )
+
+        # Récupération des utilisateurs
+        query = db.collection("users")
+        docs = query.stream()
+
+        results = []
+
+        for doc in docs:
+            data = doc.to_dict()
+
+            roles_membre = data.get(
+                "roles_par_categorie",
+                {}
+            )
+
+            if categorie in roles_membre:
+                results.append({
+                    "id": doc.id,
+                    **data
+                })
+
+        print(
+            f"[USERS GET] {categorie} -> "
+            f"{len(results)} membre(s)"
+        )
+
+        return results
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        print(f"[ERREUR USERS GET] {e}")
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 ##########################
 ######## GESTION NOTIFS & MODELS
