@@ -77,10 +77,12 @@ def verifier_token_validation(token: str):
     except Exception:
         return None
 
-def envoyer_email_notif_admin(raw_nom: str, categorie: str, id_utilisateur: str):
+def envoyer_email_notif_admin(raw_nom: str, categorie: str, id_utilisateur: str,demande_admin: bool = False):
     timestamp_str = datetime.now(timezone.utc).strftime("%d/%m/%Y à %H:%M:%S (UTC)")
     token = generer_token_validation(id_utilisateur, categorie)
     lien_validation = f"{API_BASE_URL}/users/validate?token={token}"
+    
+    role_demande = "ADMIN" if demande_admin else "PARENT"
 
     html_content = f"""
     <html>
@@ -95,7 +97,9 @@ def envoyer_email_notif_admin(raw_nom: str, categorie: str, id_utilisateur: str)
         <br/>
         <a href="{lien_validation}" 
            style="background-color: #16A34A; color: white; padding: 12px 24px; text-decoration: none; font-weight: bold; border-radius: 6px; display: inline-block;">
-           ✅ Valider l'accès (Passer en PARENT)
+        
+           ✅ Valider l'accès (Passer en {role_demande})
+        
         </a>
       </body>
     </html>
@@ -105,7 +109,7 @@ def envoyer_email_notif_admin(raw_nom: str, categorie: str, id_utilisateur: str)
         resend.Emails.send({
             "from": "FCVV App <onboarding@resend.dev>",
             "to": ADMIN_EMAIL,
-            "subject": f"[FCVV] Inscription en attente : {raw_nom} ({categorie})",
+            "subject": f"[FCVV] Inscription en attente : {raw_nom} ({categorie}) - {role_demande}",
             "html": html_content
         })
     except Exception as e:
@@ -127,8 +131,31 @@ def valider_utilisateur_via_email(token: str = Query(...)):
         raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
 
     user_data = doc_snapshot.to_dict()
-    roles_dict = user_data.get("roles_par_categorie", {})
-    roles_dict[categorie] = "PARENT"
+
+    roles_dict = user_data.get(
+        "roles_par_categorie",
+        {}
+    )
+    
+    if not isinstance(roles_dict, dict):
+        roles_dict = {}
+    
+    demandes_admin_dict = user_data.get(
+        "demandes_admin_par_categorie",
+        {}
+    )
+    
+    if not isinstance(demandes_admin_dict, dict):
+        demandes_admin_dict = {}
+    
+    demande_admin = demandes_admin_dict.get(
+        categorie,
+        False
+    )
+    
+    role_final = "ADMIN" if demande_admin else "PARENT"
+    
+    roles_dict[categorie] = role_final
 
     doc_ref.update({"roles_par_categorie": roles_dict})
 
@@ -136,7 +163,13 @@ def valider_utilisateur_via_email(token: str = Query(...)):
     <html>
         <body style="font-family: Arial; text-align: center; padding-top: 50px;">
             <h1 style="color: #16A34A;">✅ Accès Validé !</h1>
-            <p>Le membre <strong>{user_data.get('nom', id_utilisateur)}</strong> est désormais <strong>PARENT</strong> pour la catégorie <strong>{categorie}</strong>.</p>
+    
+            <p>
+                Le membre <strong>{user_data.get('nom', id_utilisateur)}</strong>
+                est désormais
+                <strong>{role_final}</strong>
+                pour la catégorie <strong>{categorie}</strong>.
+            </p>
         </body>
     </html>
     """
@@ -152,6 +185,8 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
 
     raw_nom = user.get("nom", "").strip()
     categorie = user.get("categorie", "").strip()
+    
+    demande_admin = bool(user.get("demande_admin", False))
 
     # Ancien format : un seul joueur
     nouveau_joueur = user.get(
@@ -247,6 +282,10 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
             "roles_par_categorie": roles_dict,
 
             "joueurs_par_categorie": joueurs_dict,
+            
+            "demandes_admin_par_categorie": {
+                categorie: demande_admin
+            },
 
             "created_at": firestore.SERVER_TIMESTAMP
         })
@@ -343,10 +382,20 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
 
             joueurs_dict[categorie] = joueurs_associes
 
+            demandes_admin_dict = data.get(
+                "demandes_admin_par_categorie",
+                {}
+            )
+            
+            if not isinstance(demandes_admin_dict, dict):
+                demandes_admin_dict = {}
+            
+            demandes_admin_dict[categorie] = demande_admin
+            
             doc_ref.update({
                 "roles_par_categorie": roles_dict,
-
-                "joueurs_par_categorie": joueurs_dict
+                "joueurs_par_categorie": joueurs_dict,
+                "demandes_admin_par_categorie": demandes_admin_dict
             })
 
             est_premiere_demande = True
@@ -373,14 +422,16 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
             envoyer_email_notif_admin,
             raw_nom=raw_nom,
             categorie=categorie,
-            id_utilisateur=id_utilisateur
+            id_utilisateur=id_utilisateur,
+            demande_admin=demande_admin
         )
 
         print(
             f"[REGISTER] 📧 "
             f"Notification admin programmée : "
             f"parent={raw_nom} | "
-            f"categorie={categorie}"
+            f"categorie={categorie}",
+            f"demande_admin={demande_admin}"
         )
 
     # ==========================================================
