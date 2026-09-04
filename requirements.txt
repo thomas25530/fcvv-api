@@ -3,3 +3,5 @@ uvicorn
 firebase-admin
 google-api-python-client
 pydantic
+itsdangerous
+resend
