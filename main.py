@@ -143,24 +143,38 @@ def valider_utilisateur_via_email(token: str = Query(...)):
 
 @app.post("/users/register")
 def register_user(user: dict, background_tasks: BackgroundTasks):
+
     check_db()
+
     raw_nom = user.get("nom", "").strip()
     categorie = user.get("categorie", "").strip()
     nouveau_joueur = user.get("joueur_associe", "").strip()
 
     if not raw_nom or not categorie:
-        raise HTTPException(status_code=400, detail="Nom et Catégorie requis")
+        raise HTTPException(
+            status_code=400,
+            detail="Nom et Catégorie requis"
+        )
 
     id_utilisateur = raw_nom.replace(" ", "_").lower()
+
     doc_ref = db.collection("users").document(id_utilisateur)
     doc_snapshot = doc_ref.get()
 
     est_premiere_demande = False
 
+    # ==========================================================
+    # 🟢 NOUVEL UTILISATEUR
+    # ==========================================================
     if not doc_snapshot.exists:
-        # 🟢 NOUVEL UTILISATEUR : Création du document
-        roles_dict = {categorie: "EXCLU"}
-        joueurs_dict = {categorie: [nouveau_joueur]} if nouveau_joueur else {categorie: []}
+
+        roles_dict = {
+            categorie: "EXCLU"
+        }
+
+        joueurs_dict = {
+            categorie: [nouveau_joueur] if nouveau_joueur else []
+        }
 
         doc_ref.set({
             "nom": raw_nom,
@@ -168,38 +182,96 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
             "joueurs_par_categorie": joueurs_dict,
             "created_at": firestore.SERVER_TIMESTAMP
         })
+
         est_premiere_demande = True
 
+        print(
+            f"[REGISTER] Nouveau parent={raw_nom} "
+            f"categorie={categorie} "
+            f"joueur={nouveau_joueur}"
+        )
+
+    # ==========================================================
+    # 🟡 UTILISATEUR EXISTANT
+    # ==========================================================
     else:
-        # 🟡 UTILISATEUR EXISTANT : Vérification des droits dans la catégorie
+
         data = doc_snapshot.to_dict()
+
         roles_dict = data.get("roles_par_categorie", {})
         joueurs_dict = data.get("joueurs_par_categorie", {})
 
-        # 🚨 SI L'UTILISATEUR A DÉJÀ UN RÔLE DANS CETTE CATÉGORIE
-        # (Peut importe qu'il soit EXCLU, PARENT ou ADMIN)
+        # ------------------------------------------------------
+        # CAS 1 : catégorie déjà existante
+        # ------------------------------------------------------
         if categorie in roles_dict:
-            raise HTTPException(
-                status_code=409,
-                detail="Un utilisateur avec ce nom existe déjà dans cette catégorie. Veuillez contacter le responsable."
+
+            liste_joueurs_cat = joueurs_dict.get(categorie, [])
+
+            # Sécurité : on s'assure d'avoir une vraie liste
+            if not isinstance(liste_joueurs_cat, list):
+                liste_joueurs_cat = []
+
+            # Ajouter le joueur s'il est nouveau
+            if nouveau_joueur and nouveau_joueur not in liste_joueurs_cat:
+
+                liste_joueurs_cat.append(nouveau_joueur)
+
+                joueurs_dict[categorie] = liste_joueurs_cat
+
+                doc_ref.update({
+                    "joueurs_par_categorie": joueurs_dict
+                })
+
+                print(
+                    f"[REGISTER] Joueur ajouté : "
+                    f"parent={raw_nom} "
+                    f"categorie={categorie} "
+                    f"joueur={nouveau_joueur}"
+                )
+
+            else:
+
+                print(
+                    f"[REGISTER] Aucun ajout : "
+                    f"parent={raw_nom} "
+                    f"categorie={categorie} "
+                    f"joueur={nouveau_joueur}"
+                )
+
+        # ------------------------------------------------------
+        # CAS 2 : catégorie nouvelle pour cet utilisateur
+        # ------------------------------------------------------
+        else:
+
+            roles_dict[categorie] = "EXCLU"
+
+            liste_joueurs_cat = []
+
+            if nouveau_joueur:
+                liste_joueurs_cat.append(nouveau_joueur)
+
+            joueurs_dict[categorie] = liste_joueurs_cat
+
+            doc_ref.update({
+                "roles_par_categorie": roles_dict,
+                "joueurs_par_categorie": joueurs_dict
+            })
+
+            est_premiere_demande = True
+
+            print(
+                f"[REGISTER] Nouvelle catégorie : "
+                f"parent={raw_nom} "
+                f"categorie={categorie} "
+                f"joueur={nouveau_joueur}"
             )
 
-        # 🟢 L'utilisateur existe globalement mais pas encore dans cette catégorie
-        roles_dict[categorie] = "EXCLU"
-        est_premiere_demande = True
-
-        liste_joueurs_cat = joueurs_dict.get(categorie, [])
-        if nouveau_joueur and nouveau_joueur not in liste_joueurs_cat:
-            liste_joueurs_cat.append(nouveau_joueur)
-        joueurs_dict[categorie] = liste_joueurs_cat
-
-        doc_ref.update({
-            "roles_par_categorie": roles_dict,
-            "joueurs_par_categorie": joueurs_dict
-        })
-
-    # Envoi de l'e-mail uniquement lors d'une première demande d'accès à cette catégorie
+    # ==========================================================
+    # 📧 EMAIL : uniquement pour une première demande de catégorie
+    # ==========================================================
     if est_premiere_demande:
+
         background_tasks.add_task(
             envoyer_email_notif_admin,
             raw_nom=raw_nom,
@@ -207,7 +279,10 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
             id_utilisateur=id_utilisateur
         )
 
-    return {"status": "success", "role": "EXCLU"}
+    return {
+        "status": "success",
+        "role": "EXCLU"
+    }
 
 # 🆕 AJOUT : Récupération du rôle d'un utilisateur pour une catégorie donnée
 @app.get("/users")
