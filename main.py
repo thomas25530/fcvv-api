@@ -1300,11 +1300,15 @@ def unregister_user(data: dict):
 @app.get("/users/role")
 def get_user_role(
     categorie: str,
+    nom: Optional[str] = None,
     nom_parent: Optional[str] = Header(None, alias="nom_parent")
 ):
     check_db()
 
-    if not nom_parent:
+    # Accepte soit ?nom=..., soit le header nom_parent
+    utilisateur = nom or nom_parent
+
+    if not utilisateur:
         raise HTTPException(
             status_code=400,
             detail="Identifiant de l'utilisateur manquant"
@@ -1317,7 +1321,11 @@ def get_user_role(
         )
 
     try:
-        id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
+        id_utilisateur = (
+            utilisateur.strip()
+            .replace(" ", "_")
+            .lower()
+        )
 
         doc = db.collection("users").document(id_utilisateur).get()
 
@@ -1336,13 +1344,13 @@ def get_user_role(
         ).strip().upper()
 
         print(
-            f"[ROLE GET] utilisateur={nom_parent} "
+            f"[ROLE GET] utilisateur={utilisateur} "
             f"categorie={categorie} "
             f"role={role}"
         )
 
         return {
-            "nom_parent": nom_parent,
+            "nom_parent": utilisateur,
             "categorie": categorie,
             "role": role
         }
@@ -1357,7 +1365,6 @@ def get_user_role(
             status_code=500,
             detail=str(e)
         )
-
 ##########################
 ######## CONVOCATIONS & EVENEMENTS
 
