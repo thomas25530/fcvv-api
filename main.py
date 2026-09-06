@@ -37,6 +37,8 @@ def check_db():
 ##########################
 ######## GESTION EMAIL & AUTHENTIFICATION
 
+ADMIN_API_TOKEN_SHA256 = os.getenv("ADMIN_API_TOKEN")
+
 SECRET_KEY = os.getenv("SECRET_KEY", "cle_secrete_fcvv_12345")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "responsable.club@email.com")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://votre-app.onrender.com")
@@ -926,6 +928,75 @@ def envoyer_notification_manuelle(
         return {"status": "success", "message": "Notification envoyee avec succes"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+
+
+
+
+
+def verifier_token_admin(x_admin_token: Optional[str]) -> bool:
+    """
+    Vérifie la clé utilisée par le logiciel admin.
+    Le serveur ne connaît que le SHA-256 de la clé.
+    """
+    if not ADMIN_API_TOKEN_SHA256:
+        print("[ADMIN AUTH] ADMIN_API_TOKEN_SHA256 non configuré.")
+        return False
+
+    if not x_admin_token:
+        print("[ADMIN AUTH] Aucun X-Admin-Token reçu.")
+        return False
+
+    hash_recu = hashlib.sha256(
+        x_admin_token.encode("utf-8")
+    ).hexdigest()
+
+    return hmac.compare_digest(
+        hash_recu,
+        ADMIN_API_TOKEN_SHA256
+    )
+
+
+
+
+@app.post("/admin/notifier/{categorie}")
+def envoyer_notification_admin(
+    categorie: str,
+    notif: NotifRequest,
+    x_admin_token: Optional[str] = Header(
+        None,
+        alias="X-Admin-Token"
+    ),
+):
+    check_db()
+
+    if not verifier_token_admin(x_admin_token):
+        raise HTTPException(
+            status_code=403,
+            detail="Accès admin refusé"
+        )
+
+    try:
+        envoyer_notif_push(
+            topic=categorie,
+            titre=notif.titre,
+            corps=notif.corps,
+            notif_type="manual"
+        )
+
+        return {
+            "status": "success",
+            "message": "Notification envoyée avec succès"
+        }
+
+    except Exception as e:
+        print(f"[ADMIN NOTIF ERROR] {e}")
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
 
 @app.get("/chat/{categorie}")
 def get_messages(
