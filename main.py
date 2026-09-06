@@ -181,7 +181,57 @@ def valider_utilisateur_via_email(token: str = Query(...)):
     
     roles_dict[categorie] = role_final
 
-    doc_ref.update({"roles_par_categorie": roles_dict})
+    doc_ref.update({
+        "roles_par_categorie": roles_dict
+    })
+    
+    # ==========================================================
+    # 🔔 NOTIFICATION CIBLÉE DU PARENT
+    # ==========================================================
+    
+    fcm_tokens = user_data.get(
+        "fcm_tokens",
+        []
+    )
+    
+    if not isinstance(fcm_tokens, list):
+        fcm_tokens = []
+    
+    fcm_tokens = [
+        str(token).strip()
+        for token in fcm_tokens
+        if str(token).strip()
+    ]
+    
+    nom_utilisateur = user_data.get(
+        "nom",
+        id_utilisateur
+    )
+    
+    titre_push = "FCVV - Accès validé"
+    
+    corps_push = (
+        f"Votre demande d'accès à la catégorie "
+        f"{categorie} a été validée."
+    )
+    
+    print(
+        f"[FCM VALIDATION] "
+        f"Parent={nom_utilisateur} | "
+        f"categorie={categorie} | "
+        f"role={role_final} | "
+        f"tokens={len(fcm_tokens)}"
+    )
+    
+    for fcm_token in fcm_tokens:
+    
+        envoyer_notif_push_token(
+            fcm_token=fcm_token,
+            titre=titre_push,
+            corps=corps_push,
+            categorie=categorie,
+            notif_type="validation"
+        )
 
     return f"""
     <html>
@@ -206,6 +256,14 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
     # ==========================================================
     # DONNÉES REÇUES
     # ==========================================================
+    fcm_token = user.get("fcm_token")
+
+    if fcm_token:
+        fcm_token = str(fcm_token).strip()
+    
+    if not fcm_token:
+        fcm_token = None
+    
 
     raw_nom = user.get("nom", "").strip()
     categorie = user.get("categorie", "").strip()
@@ -300,19 +358,20 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
             categorie: joueurs_associes
         }
 
-        doc_ref.set({
+        doc_data = {
             "nom": raw_nom,
-
             "roles_par_categorie": roles_dict,
-
             "joueurs_par_categorie": joueurs_dict,
-            
             "demandes_admin_par_categorie": {
                 categorie: demande_admin
             },
-
             "created_at": firestore.SERVER_TIMESTAMP
-        })
+        }
+        
+        if fcm_token:
+            doc_data["fcm_tokens"] = [fcm_token]
+        
+        doc_ref.set(doc_data)
 
         est_premiere_demande = True
 
@@ -416,11 +475,30 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
             
             demandes_admin_dict[categorie] = demande_admin
             
-            doc_ref.update({
+            update_data = {
                 "roles_par_categorie": roles_dict,
                 "joueurs_par_categorie": joueurs_dict,
                 "demandes_admin_par_categorie": demandes_admin_dict
-            })
+            }
+            
+            if fcm_token:
+                tokens_existants = data.get("fcm_tokens", [])
+            
+                if not isinstance(tokens_existants, list):
+                    tokens_existants = []
+            
+                tokens_existants = [
+                    str(token).strip()
+                    for token in tokens_existants
+                    if str(token).strip()
+                ]
+            
+                if fcm_token not in tokens_existants:
+                    tokens_existants.append(fcm_token)
+            
+                update_data["fcm_tokens"] = tokens_existants
+            
+            doc_ref.update(update_data)
 
             est_premiere_demande = True
 
@@ -465,6 +543,100 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
     return {
         "status": "success",
         "role": "ATTENTE"
+    }
+    
+@app.post("/users/fcm-token")
+def enregistrer_fcm_token(user: dict):
+    check_db()
+
+    # ==========================================================
+    # DONNÉES REÇUES
+    # ==========================================================
+
+    raw_nom = str(user.get("nom", "")).strip()
+    fcm_token = str(user.get("fcm_token", "")).strip()
+
+    if not raw_nom:
+        raise HTTPException(
+            status_code=400,
+            detail="Nom requis"
+        )
+
+    if not fcm_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Token FCM requis"
+        )
+
+    # ==========================================================
+    # IDENTIFIANT FIRESTORE
+    # ==========================================================
+
+    id_utilisateur = (
+        raw_nom
+        .replace(" ", "_")
+        .lower()
+    )
+
+    doc_ref = db.collection(
+        "users"
+    ).document(
+        id_utilisateur
+    )
+
+    doc_snapshot = doc_ref.get()
+
+    if not doc_snapshot.exists:
+        raise HTTPException(
+            status_code=404,
+            detail="Utilisateur non trouvé"
+        )
+
+    # ==========================================================
+    # RÉCUPÉRATION DES TOKENS EXISTANTS
+    # ==========================================================
+
+    data = doc_snapshot.to_dict()
+
+    tokens_existants = data.get(
+        "fcm_tokens",
+        []
+    )
+
+    if not isinstance(tokens_existants, list):
+        tokens_existants = []
+
+    tokens_existants = [
+        str(token).strip()
+        for token in tokens_existants
+        if str(token).strip()
+    ]
+
+    # ==========================================================
+    # AJOUT DU NOUVEAU TOKEN
+    # ==========================================================
+
+    if fcm_token not in tokens_existants:
+        tokens_existants.append(fcm_token)
+
+        doc_ref.update({
+            "fcm_tokens": tokens_existants
+        })
+
+        print(
+            f"[FCM TOKEN] Nouveau token enregistré : "
+            f"{raw_nom} -> {fcm_token[:25]}..."
+        )
+
+    else:
+        print(
+            f"[FCM TOKEN] Token déjà enregistré : "
+            f"{raw_nom}"
+        )
+
+    return {
+        "status": "success",
+        "tokens_count": len(tokens_existants)
     }
 
 # 🆕 AJOUT : Récupération du rôle d'un utilisateur pour une catégorie donnée
@@ -670,6 +842,74 @@ def envoyer_notif_push(
 
     except Exception as e:
         print(f"[FCM ERROR] {e}")
+
+def envoyer_notif_push_token(
+    fcm_token: str,
+    titre: str,
+    corps: str,
+    categorie: str,
+    notif_type: str = "validation"
+):
+    """
+    Envoie une notification FCM directement à un appareil précis.
+    Compatible Android + iOS.
+    """
+
+    if not fcm_token:
+        print("[FCM TOKEN] Aucun token fourni -> notification non envoyée.")
+        return False
+
+    try:
+        android_config = messaging.AndroidConfig(
+            priority="high"
+        )
+
+        apns_config = messaging.APNSConfig(
+            headers={
+                "apns-priority": "10"
+            },
+            payload=messaging.APNSPayload(
+                aps=messaging.Aps(
+                    alert=messaging.ApsAlert(
+                        title=titre,
+                        body=corps
+                    ),
+                    sound="default"
+                )
+            )
+        )
+
+        data_payload = {
+            "title": titre,
+            "body": corps,
+            "categorie": categorie,
+            "notif_type": notif_type,
+            "open_page": "vestiaire"
+        }
+
+        message = messaging.Message(
+            data=data_payload,
+            android=android_config,
+            apns_config=apns_config,
+            token=fcm_token
+        )
+
+        response = messaging.send(message)
+
+        print(
+            f"[FCM TOKEN] Notification envoyée : "
+            f"{response}"
+        )
+
+        return True
+
+    except Exception as e:
+        print(
+            f"[FCM TOKEN ERROR] "
+            f"Impossible d'envoyer la notification : {e}"
+        )
+
+        return False
 
 # --- Routes ---
 @app.get("/")
