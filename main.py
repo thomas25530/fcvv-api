@@ -833,7 +833,7 @@ def envoyer_notif_push(
         message = messaging.Message(
             data=data_payload,
             android=android_config,
-            apns_config=apns_config,
+            apns=apns_config,
             condition=condition_fcm,
         )
 
@@ -859,6 +859,21 @@ def envoyer_notif_push_token(
             priority="high"
         )
 
+        apns_config = messaging.APNSConfig(
+            headers={
+                "apns-priority": "10"
+            },
+            payload=messaging.APNSPayload(
+                aps=messaging.Aps(
+                    alert=messaging.ApsAlert(
+                        title=titre,
+                        body=corps
+                    ),
+                    sound="default"
+                )
+            )
+        )
+
         data_payload = {
             "title": titre,
             "body": corps,
@@ -870,6 +885,7 @@ def envoyer_notif_push_token(
         message = messaging.Message(
             data=data_payload,
             android=android_config,
+            apns=apns_config,
             token=fcm_token
         )
 
