@@ -850,11 +850,6 @@ def envoyer_notif_push_token(
     categorie: str,
     notif_type: str = "validation"
 ):
-    """
-    Envoie une notification FCM directement à un appareil précis.
-    Compatible Android + iOS.
-    """
-
     if not fcm_token:
         print("[FCM TOKEN] Aucun token fourni -> notification non envoyée.")
         return False
@@ -862,21 +857,6 @@ def envoyer_notif_push_token(
     try:
         android_config = messaging.AndroidConfig(
             priority="high"
-        )
-
-        apns_config = messaging.APNSConfig(
-            headers={
-                "apns-priority": "10"
-            },
-            payload=messaging.APNSPayload(
-                aps=messaging.Aps(
-                    alert=messaging.ApsAlert(
-                        title=titre,
-                        body=corps
-                    ),
-                    sound="default"
-                )
-            )
         )
 
         data_payload = {
@@ -890,17 +870,12 @@ def envoyer_notif_push_token(
         message = messaging.Message(
             data=data_payload,
             android=android_config,
-            apns_config=apns_config,
             token=fcm_token
         )
 
         response = messaging.send(message)
 
-        print(
-            f"[FCM TOKEN] Notification envoyée : "
-            f"{response}"
-        )
-
+        print(f"[FCM TOKEN] Notification envoyée : {response}")
         return True
 
     except Exception as e:
@@ -908,7 +883,6 @@ def envoyer_notif_push_token(
             f"[FCM TOKEN ERROR] "
             f"Impossible d'envoyer la notification : {e}"
         )
-
         return False
 
 # --- Routes ---
