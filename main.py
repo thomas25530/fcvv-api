@@ -62,26 +62,16 @@ def verifier_si_exclu(nom_parent: str, categorie: str) -> bool:
 
 def verifier_si_autorise(nom_parent: str, categorie: str) -> bool:
     """Autorise uniquement les utilisateurs PARENT ou ADMIN."""
-
     if not nom_parent or db is None:
         return False
-
     id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
-
     doc = db.collection("users").document(id_utilisateur).get()
-
     if not doc.exists:
         return False
-
     roles = doc.to_dict().get("roles_par_categorie", {})
-
     if not isinstance(roles, dict):
         return False
-
-    role = str(
-        roles.get(categorie, "EXCLU")
-    ).strip().upper()
-
+    role = str(roles.get(categorie, "EXCLU")).strip().upper()
     return role in ("PARENT", "ADMIN")
 
 def verifier_si_admin(nom_parent: str, categorie: str) -> bool:
@@ -110,7 +100,6 @@ def envoyer_email_notif_admin(raw_nom: str, categorie: str, id_utilisateur: str,
     timestamp_str = datetime.now(timezone.utc).strftime("%d/%m/%Y à %H:%M:%S (UTC)")
     token = generer_token_validation(id_utilisateur, categorie)
     lien_validation = f"{API_BASE_URL}/users/validate?token={token}"
-    
     role_demande = "ADMIN" if demande_admin else "PARENT"
 
     html_content = f"""
@@ -150,76 +139,40 @@ def valider_utilisateur_via_email(token: str = Query(...)):
     data = verifier_token_validation(token)
     if not data:
         return "<h1>❌ Lien invalide ou expiré</h1>"
-
     id_utilisateur = data["id"]
     categorie = data["cat"]
     doc_ref = db.collection("users").document(id_utilisateur)
     doc_snapshot = doc_ref.get()
-
     if not doc_snapshot.exists:
         raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
-
     user_data = doc_snapshot.to_dict()
-
-    roles_dict = user_data.get(
-        "roles_par_categorie",
-        {}
-    )
-    
+    roles_dict = user_data.get("roles_par_categorie",{})
     if not isinstance(roles_dict, dict):
         roles_dict = {}
-    
-    demandes_admin_dict = user_data.get(
-        "demandes_admin_par_categorie",
-        {}
-    )
-    
+    demandes_admin_dict = user_data.get("demandes_admin_par_categorie",{})
     if not isinstance(demandes_admin_dict, dict):
         demandes_admin_dict = {}
-    
-    demande_admin = demandes_admin_dict.get(
-        categorie,
-        False
-    )
-    
+    demande_admin = demandes_admin_dict.get(categorie,False)
     role_final = "ADMIN" if demande_admin else "PARENT"
-    
     roles_dict[categorie] = role_final
-
-    doc_ref.update({
-        "roles_par_categorie": roles_dict
-    })
-    
+    doc_ref.update({"roles_par_categorie": roles_dict})
     # ==========================================================
     # 🔔 NOTIFICATION CIBLÉE DU PARENT
     # ==========================================================
-    
-    fcm_tokens = user_data.get(
-        "fcm_tokens",
-        []
-    )
-    
+    fcm_tokens = user_data.get("fcm_tokens",[])
     if not isinstance(fcm_tokens, list):
         fcm_tokens = []
-    
     fcm_tokens = [
         str(token).strip()
         for token in fcm_tokens
         if str(token).strip()
     ]
-    
-    nom_utilisateur = user_data.get(
-        "nom",
-        id_utilisateur
-    )
-    
+    nom_utilisateur = user_data.get("nom",id_utilisateur)
     titre_push = "FCVV - Accès validé"
-    
     corps_push = (
         f"Votre demande d'accès à la catégorie "
         f"{categorie} a été validée."
     )
-    
     print(
         f"[FCM VALIDATION] "
         f"Parent={nom_utilisateur} | "
@@ -227,9 +180,7 @@ def valider_utilisateur_via_email(token: str = Query(...)):
         f"role={role_final} | "
         f"tokens={len(fcm_tokens)}"
     )
-    
     for fcm_token in fcm_tokens:
-    
         envoyer_notif_push_token(
             fcm_token=fcm_token,
             titre=titre_push,
@@ -255,49 +206,31 @@ def valider_utilisateur_via_email(token: str = Query(...)):
 
 @app.post("/users/register")
 def register_user(user: dict, background_tasks: BackgroundTasks):
-
     check_db()
-
     # ==========================================================
     # DONNÉES REÇUES
     # ==========================================================
     fcm_token = user.get("fcm_token")
-
     if fcm_token:
         fcm_token = str(fcm_token).strip()
-    
     if not fcm_token:
         fcm_token = None
-    
-
     raw_nom = user.get("nom", "").strip()
     categorie = user.get("categorie", "").strip()
-    
     demande_admin = bool(user.get("demande_admin", False))
-
     # Ancien format : un seul joueur
-    nouveau_joueur = user.get(
-        "joueur_associe",
-        ""
-    ).strip()
-
+    nouveau_joueur = user.get("joueur_associe","").strip()
     # Nouveau format : plusieurs joueurs
-    joueurs_associes = user.get(
-        "joueurs_associes",
-        []
-    )
-
+    joueurs_associes = user.get("joueurs_associes",[])
     # Sécurité : on s'assure que c'est bien une liste
     if not isinstance(joueurs_associes, list):
         joueurs_associes = []
-
     # Nettoyage de la liste
     joueurs_associes = [
         str(j).strip()
         for j in joueurs_associes
         if str(j).strip()
     ]
-
     # ==========================================================
     # COMPATIBILITÉ AVEC L'ANCIEN FORMAT
     #
@@ -307,23 +240,15 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
     # on transforme automatiquement en :
     # "joueurs_associes": ["COULOT Quentin"]
     # ==========================================================
-
     if not joueurs_associes and nouveau_joueur:
         joueurs_associes = [
             nouveau_joueur
         ]
-
     # ==========================================================
     # VALIDATION
     # ==========================================================
-
     if not raw_nom or not categorie:
-
-        raise HTTPException(
-            status_code=400,
-            detail="Nom et Catégorie requis"
-        )
-
+        raise HTTPException(status_code=400,detail="Nom et Catégorie requis")
     # ==========================================================
     # IDENTIFIANT FIRESTORE
     #
@@ -332,37 +257,16 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
     # devient :
     # "quentin_dominati"
     # ==========================================================
-
-    id_utilisateur = (
-        raw_nom
-        .replace(" ", "_")
-        .lower()
-    )
-
-    doc_ref = db.collection(
-        "users"
-    ).document(
-        id_utilisateur
-    )
-
+    id_utilisateur = (raw_nom.replace(" ", "_").lower())
+    doc_ref = db.collection("users").document(id_utilisateur)
     doc_snapshot = doc_ref.get()
-
     est_premiere_demande = False
-
     # ==========================================================
     # 🟢 CAS 1 : NOUVEL UTILISATEUR
     # ==========================================================
-
     if not doc_snapshot.exists:
-
-        roles_dict = {
-            categorie: "ATTENTE"
-        }
-
-        joueurs_dict = {
-            categorie: joueurs_associes
-        }
-
+        roles_dict = {categorie: "ATTENTE"}
+        joueurs_dict = {categorie: joueurs_associes}
         doc_data = {
             "nom": raw_nom,
             "roles_par_categorie": roles_dict,
@@ -372,48 +276,29 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
             },
             "created_at": firestore.SERVER_TIMESTAMP
         }
-        
         if fcm_token:
             doc_data["fcm_tokens"] = [fcm_token]
-        
         doc_ref.set(doc_data)
-
         est_premiere_demande = True
-
         print(
             f"[REGISTER] Nouveau parent="
             f"{raw_nom} | "
             f"categorie={categorie} | "
             f"joueurs={joueurs_associes}"
         )
-
     # ==========================================================
     # 🟡 CAS 2 : UTILISATEUR EXISTANT
     # ==========================================================
-
     else:
-
         data = doc_snapshot.to_dict()
-
-        roles_dict = data.get(
-            "roles_par_categorie",
-            {}
-        )
-
-        joueurs_dict = data.get(
-            "joueurs_par_categorie",
-            {}
-        )
-
+        roles_dict = data.get("roles_par_categorie",{})
+        joueurs_dict = data.get("joueurs_par_categorie",{})
         # Sécurité supplémentaire :
         # on s'assure que les dictionnaires sont bien des dicts.
-
         if not isinstance(roles_dict, dict):
             roles_dict = {}
-
         if not isinstance(joueurs_dict, dict):
             joueurs_dict = {}
-
         # ======================================================
         # 🔴 CAS 2A : CATÉGORIE DÉJÀ EXISTANTE
         #
@@ -426,22 +311,15 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
         # - si la liste est identique
         # - si la liste est différente
         # ======================================================
-
         if categorie in roles_dict:
-
-            liste_joueurs_existants = joueurs_dict.get(
-                categorie,
-                []
-            )
-
+            liste_joueurs_existants = joueurs_dict.get(categorie,[])
             if not isinstance(
                 liste_joueurs_existants,
                 list
             ):
                 liste_joueurs_existants = []
-
             print(
-                f"[SECURITE] 🚨 "
+                f"[SECURITE]"
                 f"TENTATIVE D'USURPATION POSSIBLE : "
                 f"parent={raw_nom} | "
                 f"categorie={categorie} | "
@@ -449,12 +327,7 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
                 f"joueurs_deja_associes="
                 f"{liste_joueurs_existants}"
             )
-
-            raise HTTPException(
-                status_code=403,
-                detail="USURPATION_IDENTITE"
-            )
-
+            raise HTTPException(status_code=403,detail="USURPATION_IDENTITE")
         # ======================================================
         # 🟢 CAS 2B : NOUVELLE CATÉGORIE
         #
@@ -463,29 +336,21 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
         #
         # La nouvelle demande est donc autorisée.
         # ======================================================
-
         else:
-
             roles_dict[categorie] = "ATTENTE"
-
             joueurs_dict[categorie] = joueurs_associes
-
             demandes_admin_dict = data.get(
                 "demandes_admin_par_categorie",
                 {}
             )
-            
             if not isinstance(demandes_admin_dict, dict):
                 demandes_admin_dict = {}
-            
             demandes_admin_dict[categorie] = demande_admin
-            
             update_data = {
                 "roles_par_categorie": roles_dict,
                 "joueurs_par_categorie": joueurs_dict,
                 "demandes_admin_par_categorie": demandes_admin_dict
             }
-            
             if fcm_token:
                 tokens_existants = data.get("fcm_tokens", [])
             
@@ -497,23 +362,17 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
                     for token in tokens_existants
                     if str(token).strip()
                 ]
-            
                 if fcm_token not in tokens_existants:
                     tokens_existants.append(fcm_token)
-            
                 update_data["fcm_tokens"] = tokens_existants
-            
             doc_ref.update(update_data)
-
             est_premiere_demande = True
-
             print(
-                f"[REGISTER] Nouvelle catégorie : "
+                f"[REGISTER] Nouvelle categorie : "
                 f"parent={raw_nom} | "
                 f"categorie={categorie} | "
                 f"joueurs={joueurs_associes}"
             )
-
     # ==========================================================
     # 📧 EMAIL ADMIN
     #
@@ -522,9 +381,7 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
     #
     # Un seul email, même avec plusieurs joueurs.
     # ==========================================================
-
     if est_premiere_demande:
-
         background_tasks.add_task(
             envoyer_email_notif_admin,
             raw_nom=raw_nom,
@@ -532,19 +389,16 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
             id_utilisateur=id_utilisateur,
             demande_admin=demande_admin
         )
-
         print(
-            f"[REGISTER] 📧 "
-            f"Notification admin programmée : "
+            f"[REGISTER]"
+            f"Notification admin programmee : "
             f"parent={raw_nom} | "
             f"categorie={categorie}",
             f"demande_admin={demande_admin}"
         )
-
     # ==========================================================
     # ✅ RÉPONSE API
     # ==========================================================
-
     return {
         "status": "success",
         "role": "ATTENTE"
@@ -553,92 +407,53 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
 @app.post("/users/fcm-token")
 def enregistrer_fcm_token(user: dict):
     check_db()
-
     # ==========================================================
     # DONNÉES REÇUES
     # ==========================================================
-
     raw_nom = str(user.get("nom", "")).strip()
     fcm_token = str(user.get("fcm_token", "")).strip()
-
     if not raw_nom:
         raise HTTPException(
             status_code=400,
             detail="Nom requis"
         )
-
     if not fcm_token:
-        raise HTTPException(
-            status_code=400,
-            detail="Token FCM requis"
-        )
-
+        raise HTTPException(status_code=400,detail="Token FCM requis")
     # ==========================================================
     # IDENTIFIANT FIRESTORE
     # ==========================================================
-
-    id_utilisateur = (
-        raw_nom
-        .replace(" ", "_")
-        .lower()
-    )
-
-    doc_ref = db.collection(
-        "users"
-    ).document(
-        id_utilisateur
-    )
-
+    id_utilisateur = (raw_nom.replace(" ", "_").lower())
+    doc_ref = db.collection("users").document(id_utilisateur)
     doc_snapshot = doc_ref.get()
-
     if not doc_snapshot.exists:
-        raise HTTPException(
-            status_code=404,
-            detail="Utilisateur non trouvé"
-        )
-
+        raise HTTPException(status_code=404,detail="Utilisateur non trouvé")
     # ==========================================================
     # RÉCUPÉRATION DES TOKENS EXISTANTS
     # ==========================================================
-
     data = doc_snapshot.to_dict()
-
-    tokens_existants = data.get(
-        "fcm_tokens",
-        []
-    )
-
+    tokens_existants = data.get("fcm_tokens",[])
     if not isinstance(tokens_existants, list):
         tokens_existants = []
-
     tokens_existants = [
         str(token).strip()
         for token in tokens_existants
         if str(token).strip()
     ]
-
     # ==========================================================
     # AJOUT DU NOUVEAU TOKEN
     # ==========================================================
-
     if fcm_token not in tokens_existants:
         tokens_existants.append(fcm_token)
-
-        doc_ref.update({
-            "fcm_tokens": tokens_existants
-        })
-
+        doc_ref.update({"fcm_tokens": tokens_existants})
         print(
-            f"[FCM TOKEN] Nouveau token enregistré : "
+            f"[FCM TOKEN] Nouveau token enregistre : "
             f"{raw_nom} -> {fcm_token[:25]}..."
         )
-
     else:
         print(
-            f"[FCM TOKEN] Token déjà enregistré : "
+            f"[FCM TOKEN] Token deja enregistre : "
             f"{raw_nom}"
         )
-
     return {
         "status": "success",
         "tokens_count": len(tokens_existants)
@@ -651,87 +466,57 @@ def get_users(
     nom_parent: Optional[str] = Header(None, alias="nom_parent")
 ):
     check_db()
-
     if not nom_parent:
         raise HTTPException(
             status_code=400,
             detail="Identifiant de l'utilisateur manquant"
         )
-
     if not categorie:
-        raise HTTPException(
-            status_code=400,
-            detail="Catégorie manquante"
-        )
-
+        raise HTTPException(status_code=400,detail="Catégorie manquante")
     try:
         # Récupération du rôle réel dans Firebase
         id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
-
         doc = db.collection("users").document(id_utilisateur).get()
-
         if not doc.exists:
-            raise HTTPException(
-                status_code=403,
-                detail="Utilisateur inconnu"
-            )
-
+            raise HTTPException(status_code=403,detail="Utilisateur inconnu")
         data_utilisateur = doc.to_dict()
         roles = data_utilisateur.get("roles_par_categorie", {})
-
-        role = str(
-            roles.get(categorie, "EXCLU")
-        ).strip().upper()
-
+        role = str(roles.get(categorie, "EXCLU")).strip().upper()
         print(
             f"[USERS GET] utilisateur={nom_parent} "
             f"categorie={categorie} role={role}"
         )
-
         # SEULS ADMIN et PARENT peuvent voir les membres
         if role not in ("ADMIN", "PARENT"):
             raise HTTPException(
                 status_code=403,
                 detail="Accès refusé pour ce rôle"
             )
-
         # Récupération des utilisateurs
         query = db.collection("users")
         docs = query.stream()
-
         results = []
-
         for doc in docs:
             data = doc.to_dict()
-
             roles_membre = data.get(
                 "roles_par_categorie",
                 {}
             )
-
             if categorie in roles_membre:
                 results.append({
                     "id": doc.id,
                     **data
                 })
-
         print(
             f"[USERS GET] {categorie} -> "
             f"{len(results)} membre(s)"
         )
-
         return results
-
     except HTTPException:
         raise
-
     except Exception as e:
         print(f"[ERREUR USERS GET] {e}")
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+        raise HTTPException(status_code=500,detail=str(e))
 
 ##########################
 ######## GESTION NOTIFS & MODELS
@@ -816,7 +601,6 @@ def envoyer_notif_push(
                 aps=messaging.Aps(alert=messaging.ApsAlert(title=titre, body=corps), sound="default")
             ),
         )
-
         target_page = "home" if notif_type in ["manual", "home"] else "vestiaire"
         data_payload = {
             "title": titre,
@@ -829,22 +613,18 @@ def envoyer_notif_push(
         }
         if match_id:
             data_payload["match_id"] = match_id
-
         # 🔒 Filtre FCM : Diffusion au topic sauf aux membres avec le statut EXCLU
         condition_fcm = f"'{topic}' in topics && !('{topic}_exclure' in topics)"
         if sender_clean:
             condition_fcm += f" && !('{topic}_exclure_{sender_clean}' in topics)"
-
         message = messaging.Message(
             data=data_payload,
             android=android_config,
             apns=apns_config,
             condition=condition_fcm,
         )
-
         response = messaging.send(message)
         print(f"[FCM API] envoye avec succes : {response}")
-
     except Exception as e:
         print(f"[FCM ERROR] {e}")
 
@@ -856,14 +636,12 @@ def envoyer_notif_push_token(
     notif_type: str = "validation"
 ):
     if not fcm_token:
-        print("[FCM TOKEN] Aucun token fourni -> notification non envoyée.")
+        print("[FCM TOKEN] Aucun token fourni -> notification non envoyee.")
         return False
-
     try:
         android_config = messaging.AndroidConfig(
             priority="high"
         )
-
         apns_config = messaging.APNSConfig(
             headers={
                 "apns-priority": "10"
@@ -878,7 +656,6 @@ def envoyer_notif_push_token(
                 )
             )
         )
-
         data_payload = {
             "title": titre,
             "body": corps,
@@ -886,19 +663,15 @@ def envoyer_notif_push_token(
             "notif_type": notif_type,
             "open_page": "vestiaire"
         }
-
         message = messaging.Message(
             data=data_payload,
             android=android_config,
             apns=apns_config,
             token=fcm_token
         )
-
         response = messaging.send(message)
-
-        print(f"[FCM TOKEN] Notification envoyée : {response}")
+        print(f"[FCM TOKEN] Notification envoyee : {response}")
         return True
-
     except Exception as e:
         print(
             f"[FCM TOKEN ERROR] "
@@ -920,7 +693,6 @@ def envoyer_notification_manuelle(
     check_db()
     if not nom_parent or not verifier_si_admin(nom_parent, categorie):
         raise HTTPException(status_code=403, detail="Accès refusé")
-
     try:
         envoyer_notif_push(
             topic=categorie, 
@@ -931,11 +703,6 @@ def envoyer_notification_manuelle(
         return {"status": "success", "message": "Notification envoyee avec succes"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
-
-
-
-
 
 def verifier_token_admin(x_admin_token: Optional[str]) -> bool:
     """
@@ -943,24 +710,18 @@ def verifier_token_admin(x_admin_token: Optional[str]) -> bool:
     Le serveur ne connaît que le SHA-256 de la clé.
     """
     if not ADMIN_API_TOKEN_SHA256:
-        print("[ADMIN AUTH] ADMIN_API_TOKEN_SHA256 non configuré.")
+        print("[ADMIN AUTH] ADMIN_API_TOKEN_SHA256 non configure.")
         return False
-
     if not x_admin_token:
-        print("[ADMIN AUTH] Aucun X-Admin-Token reçu.")
+        print("[ADMIN AUTH] Aucun X-Admin-Token recu.")
         return False
-
     hash_recu = hashlib.sha256(
         x_admin_token.encode("utf-8")
     ).hexdigest()
-
     return hmac.compare_digest(
         hash_recu,
         ADMIN_API_TOKEN_SHA256
     )
-
-
-
 
 @app.post("/admin/notifier/{categorie}")
 def envoyer_notification_admin(
@@ -972,13 +733,11 @@ def envoyer_notification_admin(
     ),
 ):
     check_db()
-
     if not verifier_token_admin(x_admin_token):
         raise HTTPException(
             status_code=403,
             detail="Accès admin refusé"
         )
-
     try:
         envoyer_notif_push(
             topic=categorie,
@@ -986,20 +745,16 @@ def envoyer_notification_admin(
             corps=notif.corps,
             notif_type="manual"
         )
-
         return {
             "status": "success",
             "message": "Notification envoyée avec succès"
         }
-
     except Exception as e:
         print(f"[ADMIN NOTIF ERROR] {e}")
-
         raise HTTPException(
             status_code=500,
             detail=str(e)
         )
-
 
 @app.get("/chat/{categorie}")
 def get_messages(
@@ -1009,7 +764,6 @@ def get_messages(
     # 🔒 Sécurité : Header obligatoire et vérification EXCLU
     if not nom_parent or not verifier_si_autorise(nom_parent, categorie):
         return []
-
     try:
         docs = (
             db.collection("chats")
@@ -1019,7 +773,6 @@ def get_messages(
             .limit(50)
             .stream()
         )
-
         results = []
         for doc in docs:
             data = doc.to_dict()
@@ -1038,14 +791,11 @@ def get_messages(
 def get_echange_messages(categorie: str, nom_parent: Optional[str] = Header(None, alias="nom_parent")):
     check_db()
     parent = (nom_parent or "").strip()
-
     # 🔒 Sécurité : Header obligatoire et vérification EXCLU
     if not parent or not verifier_si_autorise(parent, categorie):
         return []
-
     try:
         docs = db.collection("echanges").document(categorie).collection("messages").order_by("timestamp", direction=firestore.Query.ASCENDING).limit(100).stream()
-        
         return [
             {
                 "id": doc.id,
@@ -1071,7 +821,6 @@ def poster_message(
             status_code=403,
             detail="Action interdite : accès non validé"
         )
-
     try:
         msg_data = {
             "auteur": message.auteur,
@@ -1079,10 +828,7 @@ def poster_message(
             "role": message.role,
             "timestamp": firestore.SERVER_TIMESTAMP,
         }
-        db.collection("chats").document(categorie).collection("messages").add(
-            msg_data
-        )
-
+        db.collection("chats").document(categorie).collection("messages").add(msg_data)
         background_tasks.add_task(
             envoyer_notif_push,
             categorie,
@@ -1091,7 +837,6 @@ def poster_message(
             notif_type="chat",
             sender=message.auteur
         )
-
         return {"message": "Message envoyé avec succès"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1112,16 +857,13 @@ def poster_echange_message(
             status_code=403,
             detail="Action interdite : accès non validé"
         )
-
     contenu = message.contenu.strip()
     if not contenu:
         raise HTTPException(status_code=400, detail="Le message ne peut pas être vide")
-
     try:
         role = "PARENT"
         if verifier_si_admin(parent, categorie):
             role = "ADMIN"
-
         msg_data = {
             "auteur": parent, 
             "contenu": contenu, 
@@ -1129,7 +871,6 @@ def poster_echange_message(
             "timestamp": firestore.SERVER_TIMESTAMP
         }
         db.collection("echanges").document(categorie).collection("messages").add(msg_data)
-
         background_tasks.add_task(
             envoyer_notif_push, 
             categorie, 
@@ -1139,7 +880,6 @@ def poster_echange_message(
             sender=parent
         )
         return {"status": "success", "message": "Message envoyé avec succès"}
-
     except Exception as e:
         print(f"[ERREUR ECHANGE POST] {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1159,22 +899,17 @@ def delete_echange_message(
             status_code=403,
             detail="Action interdite : accès non validé"
         )
-
     try:
         ref = db.collection("echanges").document(categorie).collection("messages").document(message_id)
         doc = ref.get()
         if not doc.exists:
             raise HTTPException(status_code=404, detail="Message non trouvé")
-
         est_admin = verifier_si_admin(parent, categorie)
         auteur = doc.to_dict().get("auteur", "").strip().lower()
-
         if not est_admin and auteur != parent.lower():
             raise HTTPException(status_code=403, detail="Vous ne pouvez supprimer que vos propres messages")
-
         ref.delete()
         return {"status": "deleted", "message": f"Message supprimé {'par un administrateur' if est_admin else 'avec succès'}"}
-
     except HTTPException:
         raise
     except Exception as e:
@@ -1192,7 +927,6 @@ def get_sondages_par_categorie(
     # 🔒 Sécurité : Header obligatoire et vérification EXCLU
     if not nom_parent or not verifier_si_autorise(nom_parent, categorie):
         return {}
-
     try:
         docs = db.collection(f"sondages_{categorie}").stream()
         return {doc.id: doc.to_dict() for doc in docs}
@@ -1207,21 +941,17 @@ def enregistrer_vote(
 ):
     check_db()
     utilisateur_connecte = (nom_parent_header or vote.nom_parent or "").strip()
-
     if not utilisateur_connecte:
         raise HTTPException(
             status_code=400, detail="Identifiant de l'utilisateur manquant"
         )
-
     if not verifier_si_autorise(utilisateur_connecte, categorie):
         raise HTTPException(
             status_code=403,
             detail="Action interdite : accès non validé"
         )
-
     try:
         nom_identifiant_vote = (vote.nom_joueur_concerne or "").strip()
-
         if not nom_identifiant_vote:
             id_utilisateur = utilisateur_connecte.replace(" ", "_").lower()
             doc_user = db.collection("users").document(id_utilisateur).get()
@@ -1229,18 +959,14 @@ def enregistrer_vote(
             if doc_user.exists:
                 joueurs_par_cat = doc_user.to_dict().get("joueurs_par_categorie", {})
                 joueurs_lies = joueurs_par_cat.get(categorie, [])
-
             nom_identifiant_vote = (
                 joueurs_lies[0] if joueurs_lies else utilisateur_connecte
             )
-
         is_coach = str(nom_identifiant_vote).upper().startswith("COACH_")
-
         vote_updates = {
             f"votes.{nom_identifiant_vote}.dernier_modificateur": utilisateur_connecte,
             f"votes.{nom_identifiant_vote}.est_coach": is_coach,
         }
-
         if vote.choix is not None:
             vote_updates[f"votes.{nom_identifiant_vote}.disponibilite"] = vote.choix
         if vote.choix_trajet is not None:
@@ -1251,16 +977,13 @@ def enregistrer_vote(
             vote_updates[f"votes.{nom_identifiant_vote}.choix_multiple"] = vote.choix_multiple
         if vote.nombre_de_places is not None:
             vote_updates[f"votes.{nom_identifiant_vote}.nombre_de_places"] = vote.nombre_de_places
-
         doc_ref = db.collection(f"convocations_{categorie}").document(vote.id_sondage)
         doc_ref.update(vote_updates)
-
         return {
             "message": "Vote mis à jour avec succès",
             "joueur": nom_identifiant_vote,
             "modifie_par": utilisateur_connecte,
         }
-
     except Exception as e:
         print(f"[ERREUR VOTE] {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1275,10 +998,8 @@ def create_sondage(
     check_db()
     if not nom_parent or not verifier_si_admin(nom_parent, categorie):
         raise HTTPException(status_code=403, detail="Accès refusé")
-
     try:
         db.collection(f"sondages_{categorie}").add(sondage.model_dump())
-
         background_tasks.add_task(
             envoyer_notif_push,
             categorie,
@@ -1287,7 +1008,6 @@ def create_sondage(
             notif_type="evenement",
             sender=nom_parent
         )
-
         return {"status": "created"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1302,7 +1022,6 @@ def update_sondage(
     check_db()
     if not nom_parent or not verifier_si_admin(nom_parent, categorie):
         raise HTTPException(status_code=403, detail="Accès refusé")
-
     try:
         doc_ref = db.collection(f"sondages_{categorie}").document(sid)
         if not doc_ref.get().exists:
@@ -1321,7 +1040,6 @@ def delete_sondage(
     check_db()
     if not nom_parent or not verifier_si_admin(nom_parent, categorie):
         raise HTTPException(status_code=403, detail="Accès refusé")
-
     try:
         doc_ref = db.collection(f"sondages_{categorie}").document(sid)
         if not doc_ref.get().exists:
@@ -1339,38 +1057,30 @@ def unregister_user(data: dict):
     check_db()
     raw_nom = data.get("nom", "").strip()
     categorie = data.get("categorie", "").strip()
-
     if not raw_nom:
         raise HTTPException(status_code=400, detail="Nom d'utilisateur requis")
-
     id_utilisateur = raw_nom.replace(" ", "_").lower()
     doc_ref = db.collection("users").document(id_utilisateur)
     doc_snapshot = doc_ref.get()
-
     if not doc_snapshot.exists:
         return {"status": "not_found", "message": "Utilisateur non trouvé"}
-
     user_data = doc_snapshot.to_dict()
     roles_dict = user_data.get("roles_par_categorie", {})
     joueurs_dict = user_data.get("joueurs_par_categorie", {})
-
     if categorie:
         roles_dict.pop(categorie, None)
         joueurs_dict.pop(categorie, None)
-
     doc_ref.update(
         {
             "roles_par_categorie": roles_dict,
             "joueurs_par_categorie": joueurs_dict,
         }
     )
-
     return {
         "status": "unregistered",
         "message": f"Désinscription de la catégorie {categorie} effectuée.",
     }
 
-    
 @app.get("/users/role")
 def get_user_role(
     categorie: str,
@@ -1378,67 +1088,48 @@ def get_user_role(
     nom_parent: Optional[str] = Header(None, alias="nom_parent")
 ):
     check_db()
-
     # Accepte soit ?nom=..., soit le header nom_parent
     utilisateur = nom or nom_parent
-
     if not utilisateur:
         raise HTTPException(
             status_code=400,
             detail="Identifiant de l'utilisateur manquant"
         )
-
     if not categorie:
         raise HTTPException(
             status_code=400,
             detail="Catégorie manquante"
         )
-
     try:
         id_utilisateur = (
             utilisateur.strip()
             .replace(" ", "_")
             .lower()
         )
-
         doc = db.collection("users").document(id_utilisateur).get()
-
         if not doc.exists:
             raise HTTPException(
                 status_code=404,
                 detail="Utilisateur inconnu"
             )
-
         data = doc.to_dict()
-
         roles = data.get("roles_par_categorie", {})
-
-        role = str(
-            roles.get(categorie, "EXCLU")
-        ).strip().upper()
-
+        role = str(roles.get(categorie, "EXCLU")).strip().upper()
         print(
             f"[ROLE GET] utilisateur={utilisateur} "
             f"categorie={categorie} "
             f"role={role}"
         )
-
         return {
             "nom_parent": utilisateur,
             "categorie": categorie,
             "role": role
         }
-
     except HTTPException:
         raise
-
     except Exception as e:
         print(f"[ERREUR ROLE GET] {e}")
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+        raise HTTPException(status_code=500,detail=str(e))
 ##########################
 ######## CONVOCATIONS & EVENEMENTS
 
@@ -1453,12 +1144,10 @@ def update_convocations(
     check_db()
     if not nom_parent or not verifier_si_admin(nom_parent, categorie):
         raise HTTPException(status_code=403, detail="Accès refusé")
-
     try:
         data_dict = payload.model_dump()
         type_evt = data_dict.get("type", "EVENEMENT").upper()
         date_brute = data_dict.get("date", "").replace("/", "-")
-
         est_un_nouveau = (
             not match_id
             or match_id == "Nouvel événement"
@@ -1470,7 +1159,6 @@ def update_convocations(
             type_evt == "ENTRAINEMENT"
             and not match_id.startswith("entrainement_")
         )
-
         if est_un_nouveau or type_incoherent:
             if type_evt == "MATCH":
                 adversaire = (
@@ -1500,7 +1188,6 @@ def update_convocations(
                     .lower()
                 )
                 nouveau_match_id = f"evt_{titre_evt}_{date_brute}".strip("_")
-
             if not est_un_nouveau and match_id and match_id != nouveau_match_id:
                 try:
                     db.collection(f"convocations_{categorie}").document(
@@ -1509,16 +1196,13 @@ def update_convocations(
                 except Exception:
                     pass
             match_id = nouveau_match_id
-
         doc_ref = db.collection(f"convocations_{categorie}").document(match_id)
         doc_ref.set(data_dict, merge=True)
-
         titre_evt = data_dict.get("titre", "")
         adversaire = data_dict.get("adversaire", "")
         date_evt = data_dict.get("date", "")
         est_mod = data_dict.get("est_modification", False)
         motif = data_dict.get("dernier_commit", "").strip()
-
         if type_evt == "ENTRAINEMENT":
             nom_affiche = titre_evt if titre_evt else "Entraînement"
             type_libelle = "l'entraînement"
@@ -1528,7 +1212,6 @@ def update_convocations(
         else:
             nom_affiche = titre_evt if titre_evt else match_id
             type_libelle = f"l'événement {nom_affiche}"
-
         if est_mod:
             titre_notif = f"FCVV - Modification ({categorie})"
             corps_notif = f"Modification concernant {type_libelle} ({date_evt})."
@@ -1546,11 +1229,7 @@ def update_convocations(
             else:
                 corps_notif = f"Événement : {nom_affiche} ({date_evt})".strip()
                 titre_notif = f"FCVV - Nouvel Événement ({categorie})"
-
-        background_tasks.add_task(
-            envoyer_notif_push, categorie, titre_notif, corps_notif, notif_type="evenement", match_id=match_id, sender=nom_parent
-        )
-
+        background_tasks.add_task(envoyer_notif_push, categorie, titre_notif, corps_notif, notif_type="evenement", match_id=match_id, sender=nom_parent)
         return {"status": "updated", "id": match_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1565,47 +1244,35 @@ def batch_update_convocations(
     check_db()
     if not nom_parent or not verifier_si_admin(nom_parent, categorie):
         raise HTTPException(status_code=403, detail="Accès refusé")
-
     try:
         batch = db.batch()
         nb_evenements = len(payload.evenements)
-        
         if nb_evenements == 0:
             return {"status": "updated", "count": 0}
-
         premiere_date = ""
         derniere_date = ""
-
         for idx, evt in enumerate(payload.evenements):
             data_dict = evt.model_dump()
             date_brute = data_dict.get("date", "").replace("/", "-")
             date_evt = data_dict.get("date", "")
-
             if idx == 0:
                 premiere_date = date_evt
             if idx == nb_evenements - 1:
                 derniere_date = date_evt
-
             heure_ent = data_dict.get("heure", data_dict.get("heure_rdv", "")).replace(":", "h") or "00h00"
             match_id = f"entrainement_{date_brute}_{heure_ent}".strip("_")
-
             doc_ref = db.collection(f"convocations_{categorie}").document(match_id)
             batch.set(doc_ref, data_dict, merge=True)
-
         batch.commit()
-
         titre_notif = f"FCVV - Entraînements ({categorie})"
         if nb_evenements == 1:
             corps_notif = f"1 nouvel entraînement a été planifié pour le {premiere_date}."
         else:
             corps_notif = f"{nb_evenements} nouveaux entraînements planifiés (du {premiere_date} au {derniere_date})."
-
         background_tasks.add_task(
             envoyer_notif_push, categorie, titre_notif, corps_notif, notif_type="evenement", sender=nom_parent
         )
-
         return {"status": "updated", "count": nb_evenements}
-
     except Exception as e:
         print(f"[ERREUR BATCH ENTRAINEMENTS] {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1619,7 +1286,6 @@ def delete_convocation(
     check_db()
     if not nom_parent or not verifier_si_admin(nom_parent, categorie):
         raise HTTPException(status_code=403, detail="Accès refusé")
-
     try:
         db.collection(f"convocations_{categorie}").document(match_id).delete()
         return {"status": "deleted"}
@@ -1635,7 +1301,6 @@ def get_convocations(
     # 🔒 Sécurité : Header obligatoire et vérification EXCLU
     if not nom_parent or not verifier_si_autorise(nom_parent, categorie):
         return {}
-
     docs = db.collection(f"convocations_{categorie}").stream()
     return {doc.id: doc.to_dict() for doc in docs}
 
@@ -1652,7 +1317,6 @@ def get_one_convocation(
             status_code=403,
             detail="Accès refusé : accès non validé ou utilisateur non identifié"
         )
-
     doc = db.collection(f"convocations_{categorie}").document(match_id).get()
     if not doc.exists:
         raise HTTPException(status_code=404, detail="Match non trouvé")
