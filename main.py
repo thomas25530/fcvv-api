@@ -628,6 +628,7 @@ def envoyer_notif_push(
     except Exception as e:
         print(f"[FCM ERROR] {e}")
 
+
 def envoyer_notif_push_token(
     fcm_token: str,
     titre: str,
@@ -638,10 +639,18 @@ def envoyer_notif_push_token(
     if not fcm_token:
         print("[FCM TOKEN] Aucun token fourni -> notification non envoyee.")
         return False
+
     try:
+        # ---------------------------------------------------------
+        # Configuration Android
+        # ---------------------------------------------------------
         android_config = messaging.AndroidConfig(
             priority="high"
         )
+
+        # ---------------------------------------------------------
+        # Configuration APNS (iOS)
+        # ---------------------------------------------------------
         apns_config = messaging.APNSConfig(
             headers={
                 "apns-priority": "10"
@@ -656,6 +665,12 @@ def envoyer_notif_push_token(
                 )
             )
         )
+
+        # ---------------------------------------------------------
+        # Data Payload
+        # Ces données restent disponibles pour ton application
+        # et servent notamment à la redirection.
+        # ---------------------------------------------------------
         data_payload = {
             "title": titre,
             "body": corps,
@@ -663,15 +678,39 @@ def envoyer_notif_push_token(
             "notif_type": notif_type,
             "open_page": "vestiaire"
         }
+
+        # ---------------------------------------------------------
+        # Message FCM
+        #
+        # notification = affichage système lorsque l'application
+        # n'est pas active
+        #
+        # data = informations utilisées par l'application
+        # ---------------------------------------------------------
         message = messaging.Message(
+            notification=messaging.Notification(
+                title=titre,
+                body=corps
+            ),
             data=data_payload,
             android=android_config,
             apns=apns_config,
             token=fcm_token
         )
+
+        # ---------------------------------------------------------
+        # Envoi
+        # ---------------------------------------------------------
         response = messaging.send(message)
-        print(f"[FCM TOKEN] Notification envoyee : {response}")
+
+        print(
+            f"[FCM TOKEN] Notification envoyee | "
+            f"token={fcm_token[:30]}... | "
+            f"message_id={response}"
+        )
+
         return True
+
     except Exception as e:
         print(
             f"[FCM TOKEN ERROR] "
