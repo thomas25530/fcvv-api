@@ -628,7 +628,6 @@ def envoyer_notif_push(
     except Exception as e:
         print(f"[FCM ERROR] {e}")
 
-
 def envoyer_notif_push_token(
     fcm_token: str,
     titre: str,
@@ -637,7 +636,10 @@ def envoyer_notif_push_token(
     notif_type: str = "validation"
 ):
     if not fcm_token:
-        print("[FCM TOKEN] Aucun token fourni -> notification non envoyee.")
+        print(
+            "[FCM TOKEN] Aucun token fourni -> "
+            "notification non envoyee."
+        )
         return False
 
     try:
@@ -645,7 +647,11 @@ def envoyer_notif_push_token(
         # Configuration Android
         # ---------------------------------------------------------
         android_config = messaging.AndroidConfig(
-            priority="high"
+            priority="high",
+            notification=messaging.AndroidNotification(
+                icon="ic_notification",
+                channel_id="fcvv_high_priority_v2"
+            )
         )
 
         # ---------------------------------------------------------
@@ -668,8 +674,6 @@ def envoyer_notif_push_token(
 
         # ---------------------------------------------------------
         # Data Payload
-        # Ces données restent disponibles pour ton application
-        # et servent notamment à la redirection.
         # ---------------------------------------------------------
         data_payload = {
             "title": titre,
@@ -682,10 +686,13 @@ def envoyer_notif_push_token(
         # ---------------------------------------------------------
         # Message FCM
         #
-        # notification = affichage système lorsque l'application
-        # n'est pas active
+        # notification :
+        #   permet à Android d'afficher la notification lorsque
+        #   l'application est fermée / en arrière-plan.
         #
-        # data = informations utilisées par l'application
+        # data :
+        #   conserve les informations nécessaires à l'application
+        #   pour la redirection et le traitement.
         # ---------------------------------------------------------
         message = messaging.Message(
             notification=messaging.Notification(
@@ -699,7 +706,7 @@ def envoyer_notif_push_token(
         )
 
         # ---------------------------------------------------------
-        # Envoi
+        # Envoi FCM
         # ---------------------------------------------------------
         response = messaging.send(message)
 
