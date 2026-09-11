@@ -1380,6 +1380,1216 @@ def get_one_convocation(
         raise HTTPException(status_code=404, detail="Match non trouvé")
     return doc.to_dict()
 
+
+##########################
+# STATISTIQUES & HISTORIQUE DES PRESENCES
+##########################
+
+class StatsVoteRequest(BaseModel):
+    id_sondage: str
+    nom_parent: str
+    nom_joueur_concerne: Optional[str] = None
+    choix: Optional[str] = None
+    choix_trajet: Optional[str] = None
+    second_vote: Optional[str] = None
+    choix_multiple: Optional[str] = None
+    nombre_de_places: Optional[int] = None
+
+
+def _stats_id_joueur(nom_joueur: str) -> str:
+    """
+    Transforme le nom du joueur en identifiant Firestore stable.
+    """
+    return (
+        str(nom_joueur)
+        .strip()
+        .replace(" ", "_")
+        .lower()
+    )
+
+
+def _stats_normaliser_type(type_evenement: str) -> str:
+    """
+    Normalise le type d'événement.
+    """
+    valeur = str(type_evenement or "").strip().upper()
+
+    if valeur in ("MATCH", "MATCHES"):
+        return "MATCH"
+
+    if valeur in (
+        "ENTRAINEMENT",
+        "ENTRAÎNEMENT",
+        "ENTRAINEMENTS",
+        "ENTRAÎNEMENTS",
+    ):
+        return "ENTRAINEMENT"
+
+    return valeur or "EVENEMENT"
+
+
+def _stats_creer_event_uid():
+    """
+    Génère un identifiant historique indépendant du match_id.
+
+    Le match_id peut changer ou être supprimé.
+    Le event_uid reste la référence permanente.
+    """
+    import uuid
+
+    return uuid.uuid4().hex
+
+
+def _stats_recuperer_event_uid(categorie: str, match_id: str):
+    """
+    Récupère l'identifiant historique d'un événement.
+
+    Si l'événement n'en possède pas encore, on en crée un.
+
+    La route existante /convocations/... n'est pas modifiée.
+    On ajoute uniquement notre champ stats_event_uid.
+    """
+    check_db()
+
+    event_ref = (
+        db.collection(f"convocations_{categorie}")
+        .document(match_id)
+    )
+
+    snapshot = event_ref.get()
+
+    if not snapshot.exists:
+        raise HTTPException(
+            status_code=404,
+            detail="Événement non trouvé"
+        )
+
+    data = snapshot.to_dict() or {}
+
+    event_uid = data.get("stats_event_uid")
+
+    if event_uid:
+        return event_uid, data
+
+    event_uid = _stats_creer_event_uid()
+
+    event_ref.update({
+        "stats_event_uid": event_uid
+    })
+
+    data["stats_event_uid"] = event_uid
+
+    return event_uid, data
+
+
+# ============================================================
+# ARCHIVAGE D'UN EVENEMENT
+# ============================================================
+
+@app.post("/stats/historique/evenement/{categorie}/{match_id}")
+def stats_enregistrer_evenement(
+    categorie: str,
+    match_id: str,
+    nom_parent: Optional[str] = Header(
+        None,
+        alias="nom_parent"
+    ),
+):
+    """
+    Crée ou synchronise la copie historique d'un événement.
+
+    L'événement actuel reste dans convocations_{categorie}.
+    L'historique est indépendant et sera conservé après suppression.
+    """
+
+    check_db()
+
+    if not nom_parent or not verifier_si_admin(
+        nom_parent,
+        categorie
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Accès refusé"
+        )
+
+    try:
+
+        event_uid, evenement = _stats_recuperer_event_uid(
+            categorie,
+            match_id
+        )
+
+        historique_ref = (
+            db.collection("historique_presences")
+            .document(categorie)
+            .collection("evenements")
+            .document(event_uid)
+        )
+
+        # --------------------------------------------------------
+        # IMPORTANT :
+        # On conserve la liste des joueurs convoqués.
+        # Ainsi un joueur qui n'a jamais voté sera quand même
+        # compté dans le nombre total d'événements.
+        # --------------------------------------------------------
+
+        joueurs_convoques = evenement.get(
+            "joueurs_convoques",
+            []
+        )
+
+        if not isinstance(joueurs_convoques, list):
+            joueurs_convoques = []
+
+        historique_data = {
+            "event_uid": event_uid,
+            "match_id": match_id,
+            "categorie": categorie,
+
+            "type": _stats_normaliser_type(
+                evenement.get("type", "")
+            ),
+
+            "titre": evenement.get(
+                "titre",
+                ""
+            ),
+
+            "adversaire": evenement.get(
+                "adversaire",
+                ""
+            ),
+
+            "date": evenement.get(
+                "date",
+                ""
+            ),
+
+            "heure": (
+                evenement.get("heure")
+                or evenement.get("heure_rdv")
+                or evenement.get("heure_sur_place")
+                or evenement.get("heure_match")
+                or ""
+            ),
+
+            "lieu": evenement.get(
+                "lieu",
+                ""
+            ),
+
+            # Liste figée des joueurs convoqués
+            "joueurs_convoques": joueurs_convoques,
+
+            "deleted": False,
+
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        }
+
+        # merge=True :
+        # les votes déjà enregistrés ne sont jamais supprimés.
+        historique_ref.set(
+            historique_data,
+            merge=True
+        )
+
+        print(
+            f"[STATS EVENEMENT] "
+            f"categorie={categorie} | "
+            f"match_id={match_id} | "
+            f"event_uid={event_uid} | "
+            f"joueurs={len(joueurs_convoques)}"
+        )
+
+        return {
+            "status": "success",
+            "event_uid": event_uid,
+            "match_id": match_id,
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+
+        print(
+            f"[STATS EVENEMENT ERROR] {e}"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
+
+# ============================================================
+# HISTORIQUE DES VOTES
+# ============================================================
+
+@app.post("/stats/historique/vote/{categorie}")
+def stats_enregistrer_vote(
+    categorie: str,
+    vote: StatsVoteRequest,
+):
+    """
+    Sauvegarde définitivement un vote.
+
+    Deux informations sont conservées :
+
+    1. votes/{joueur_id}
+       -> dernier état du vote
+
+    2. votes_history/{action_id}
+       -> chaque action de vote, définitivement
+
+    Ainsi :
+
+        Présent
+        Absent
+        Présent
+
+    reste entièrement conservé dans votes_history.
+    """
+
+    check_db()
+
+    utilisateur = (
+        vote.nom_parent or ""
+    ).strip()
+
+    if not utilisateur:
+        raise HTTPException(
+            status_code=400,
+            detail="Identifiant de l'utilisateur manquant"
+        )
+
+    if not verifier_si_autorise(
+        utilisateur,
+        categorie
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Action interdite : accès non validé"
+        )
+
+    try:
+
+        # --------------------------------------------------------
+        # 1. Récupération de l'événement actuel
+        # --------------------------------------------------------
+
+        event_ref = (
+            db.collection(f"convocations_{categorie}")
+            .document(vote.id_sondage)
+        )
+
+        event_snapshot = event_ref.get()
+
+        if not event_snapshot.exists:
+            raise HTTPException(
+                status_code=404,
+                detail="Événement non trouvé"
+            )
+
+        evenement = (
+            event_snapshot.to_dict()
+            or {}
+        )
+
+        # --------------------------------------------------------
+        # 2. Event UID
+        # --------------------------------------------------------
+
+        event_uid = evenement.get(
+            "stats_event_uid"
+        )
+
+        if not event_uid:
+
+            event_uid = _stats_creer_event_uid()
+
+            event_ref.update({
+                "stats_event_uid": event_uid
+            })
+
+        # --------------------------------------------------------
+        # 3. Détermination du joueur
+        # --------------------------------------------------------
+
+        joueur = (
+            vote.nom_joueur_concerne
+            or ""
+        ).strip()
+
+        if not joueur:
+
+            id_utilisateur = (
+                utilisateur
+                .replace(" ", "_")
+                .lower()
+            )
+
+            user_ref = (
+                db.collection("users")
+                .document(id_utilisateur)
+            )
+
+            user_snapshot = user_ref.get()
+
+            joueurs_lies = []
+
+            if user_snapshot.exists:
+
+                user_data = (
+                    user_snapshot.to_dict()
+                    or {}
+                )
+
+                joueurs_par_cat = (
+                    user_data.get(
+                        "joueurs_par_categorie",
+                        {}
+                    )
+                )
+
+                if isinstance(
+                    joueurs_par_cat,
+                    dict
+                ):
+                    joueurs_lies = (
+                        joueurs_par_cat.get(
+                            categorie,
+                            []
+                        )
+                    )
+
+            joueur = (
+                joueurs_lies[0]
+                if joueurs_lies
+                else utilisateur
+            )
+
+        joueur_id = _stats_id_joueur(
+            joueur
+        )
+
+        is_coach = (
+            str(joueur)
+            .upper()
+            .startswith("COACH_")
+        )
+
+        # --------------------------------------------------------
+        # 4. Référence historique
+        # --------------------------------------------------------
+
+        historique_event_ref = (
+            db.collection("historique_presences")
+            .document(categorie)
+            .collection("evenements")
+            .document(event_uid)
+        )
+
+        # --------------------------------------------------------
+        # 5. Synchronisation des informations de l'événement
+        # --------------------------------------------------------
+
+        joueurs_convoques = evenement.get(
+            "joueurs_convoques",
+            []
+        )
+
+        if not isinstance(
+            joueurs_convoques,
+            list
+        ):
+            joueurs_convoques = []
+
+        historique_event_ref.set(
+            {
+                "event_uid": event_uid,
+
+                "match_id": vote.id_sondage,
+
+                "categorie": categorie,
+
+                "type": _stats_normaliser_type(
+                    evenement.get(
+                        "type",
+                        ""
+                    )
+                ),
+
+                "titre": evenement.get(
+                    "titre",
+                    ""
+                ),
+
+                "adversaire": evenement.get(
+                    "adversaire",
+                    ""
+                ),
+
+                "date": evenement.get(
+                    "date",
+                    ""
+                ),
+
+                "heure": (
+                    evenement.get("heure")
+                    or evenement.get("heure_rdv")
+                    or evenement.get("heure_sur_place")
+                    or evenement.get("heure_match")
+                    or ""
+                ),
+
+                "lieu": evenement.get(
+                    "lieu",
+                    ""
+                ),
+
+                # Très important pour les statistiques
+                "joueurs_convoques": joueurs_convoques,
+
+                "deleted": False,
+
+                "updated_at":
+                    firestore.SERVER_TIMESTAMP,
+            },
+            merge=True
+        )
+
+        # --------------------------------------------------------
+        # 6. Données du vote
+        # --------------------------------------------------------
+
+        vote_data = {
+            "joueur": joueur,
+            "joueur_id": joueur_id,
+            "parent": utilisateur,
+            "est_coach": is_coach,
+
+            "choix": vote.choix,
+            "disponibilite": vote.choix,
+
+            "choix_trajet": vote.choix_trajet,
+
+            "second_vote": vote.second_vote,
+
+            "choix_multiple":
+                vote.choix_multiple,
+
+            "nombre_de_places":
+                vote.nombre_de_places,
+
+            "match_id":
+                vote.id_sondage,
+
+            "timestamp":
+                firestore.SERVER_TIMESTAMP,
+        }
+
+        # --------------------------------------------------------
+        # 7. Dernier état du vote
+        # --------------------------------------------------------
+
+        dernier_vote_ref = (
+            historique_event_ref
+            .collection("votes")
+            .document(joueur_id)
+        )
+
+        dernier_vote_ref.set(
+            vote_data,
+            merge=True
+        )
+
+        # --------------------------------------------------------
+        # 8. Historique IMMUTABLE
+        # --------------------------------------------------------
+
+        historique_vote_ref = (
+            historique_event_ref
+            .collection("votes_history")
+            .document()
+        )
+
+        historique_vote_ref.set(
+            {
+                **vote_data,
+
+                "action_id":
+                    historique_vote_ref.id,
+
+                "timestamp":
+                    firestore.SERVER_TIMESTAMP,
+            }
+        )
+
+        print(
+            f"[STATS VOTE] "
+            f"categorie={categorie} | "
+            f"event_uid={event_uid} | "
+            f"match_id={vote.id_sondage} | "
+            f"joueur={joueur} | "
+            f"choix={vote.choix}"
+        )
+
+        return {
+            "status": "success",
+            "event_uid": event_uid,
+            "joueur": joueur,
+            "message":
+                "Vote sauvegardé dans l'historique",
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+
+        print(
+            f"[STATS VOTE ERROR] {e}"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
+
+# ============================================================
+# SUPPRESSION HISTORIQUE
+# ============================================================
+
+@app.delete("/stats/historique/evenement/{categorie}/{match_id}")
+def stats_marquer_evenement_supprime(
+    categorie: str,
+    match_id: str,
+    nom_parent: Optional[str] = Header(
+        None,
+        alias="nom_parent"
+    ),
+):
+    """
+    Marque l'événement comme supprimé.
+
+    IMPORTANT :
+    aucune donnée historique n'est supprimée.
+    """
+
+    check_db()
+
+    if not nom_parent or not verifier_si_admin(
+        nom_parent,
+        categorie
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Accès refusé"
+        )
+
+    try:
+
+        # --------------------------------------------------------
+        # 1. Recherche de l'événement actuel
+        # --------------------------------------------------------
+
+        event_ref = (
+            db.collection(
+                f"convocations_{categorie}"
+            )
+            .document(match_id)
+        )
+
+        snapshot = event_ref.get()
+
+        if snapshot.exists:
+
+            data = (
+                snapshot.to_dict()
+                or {}
+            )
+
+            event_uid = data.get(
+                "stats_event_uid"
+            )
+
+            if event_uid:
+
+                historique_ref = (
+                    db.collection(
+                        "historique_presences"
+                    )
+                    .document(categorie)
+                    .collection("evenements")
+                    .document(event_uid)
+                )
+
+                historique_ref.set(
+                    {
+                        "deleted": True,
+
+                        "deleted_at":
+                            firestore.SERVER_TIMESTAMP,
+
+                        "match_id":
+                            match_id,
+                    },
+                    merge=True
+                )
+
+                return {
+                    "status": "success",
+                    "event_uid": event_uid,
+                    "deleted": True,
+                }
+
+        # --------------------------------------------------------
+        # 2. Cas où l'événement est déjà supprimé
+        # --------------------------------------------------------
+
+        historique_events = (
+            db.collection(
+                "historique_presences"
+            )
+            .document(categorie)
+            .collection("evenements")
+            .where(
+                "match_id",
+                "==",
+                match_id
+            )
+            .stream()
+        )
+
+        nombre = 0
+
+        for doc in historique_events:
+
+            doc.reference.set(
+                {
+                    "deleted": True,
+
+                    "deleted_at":
+                        firestore.SERVER_TIMESTAMP,
+                },
+                merge=True
+            )
+
+            nombre += 1
+
+        return {
+            "status": "success",
+            "deleted": True,
+            "historique_trouve": nombre,
+        }
+
+    except Exception as e:
+
+        print(
+            f"[STATS DELETE ERROR] {e}"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
+
+# ============================================================
+# STATISTIQUES
+# ============================================================
+
+@app.get("/stats/{categorie}")
+def recuperer_stats(
+    categorie: str,
+    nom_parent: Optional[str] = Header(
+        None,
+        alias="nom_parent"
+    ),
+):
+    """
+    Retourne les statistiques de présence.
+
+    Seuls les ADMIN peuvent accéder aux statistiques.
+
+    Le total est calculé à partir des joueurs convoqués,
+    et non uniquement à partir des joueurs ayant voté.
+    """
+
+    check_db()
+
+    # --------------------------------------------------------
+    # 1. Vérification ADMIN stricte
+    # --------------------------------------------------------
+
+    if not nom_parent:
+
+        raise HTTPException(
+            status_code=403,
+            detail="Accès refusé"
+        )
+
+    id_utilisateur = (
+        nom_parent
+        .strip()
+        .replace(" ", "_")
+        .lower()
+    )
+
+    user_ref = (
+        db.collection("users")
+        .document(id_utilisateur)
+    )
+
+    user_snapshot = user_ref.get()
+
+    if not user_snapshot.exists:
+
+        raise HTTPException(
+            status_code=403,
+            detail="Utilisateur inconnu"
+        )
+
+    user_data = (
+        user_snapshot.to_dict()
+        or {}
+    )
+
+    roles = user_data.get(
+        "roles_par_categorie",
+        {}
+    )
+
+    role = str(
+        roles.get(
+            categorie,
+            "EXCLU"
+        )
+    ).strip().upper()
+
+    # ADMIN UNIQUEMENT
+    if role != "ADMIN":
+
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Statistiques réservées "
+                "aux administrateurs"
+            )
+        )
+
+    # --------------------------------------------------------
+    # 2. Récupération des événements historiques
+    # --------------------------------------------------------
+
+    events_ref = (
+        db.collection(
+            "historique_presences"
+        )
+        .document(categorie)
+        .collection("evenements")
+    )
+
+    events_docs = events_ref.stream()
+
+    evenements = []
+
+    for doc in events_docs:
+
+        data = (
+            doc.to_dict()
+            or {}
+        )
+
+        data["event_uid"] = doc.id
+
+        evenements.append(data)
+
+    # --------------------------------------------------------
+    # 3. Récupération de TOUS les joueurs de la catégorie
+    # --------------------------------------------------------
+
+    joueurs = {}
+
+    users_docs = (
+        db.collection("users")
+        .stream()
+    )
+
+    for user_doc in users_docs:
+
+        user = (
+            user_doc.to_dict()
+            or {}
+        )
+
+        roles_user = user.get(
+            "roles_par_categorie",
+            {}
+        )
+
+        if categorie not in roles_user:
+            continue
+
+        joueurs_user = user.get(
+            "joueurs_par_categorie",
+            {}
+        )
+
+        if not isinstance(
+            joueurs_user,
+            dict
+        ):
+            continue
+
+        liste = joueurs_user.get(
+            categorie,
+            []
+        )
+
+        if not isinstance(
+            liste,
+            list
+        ):
+            continue
+
+        for joueur in liste:
+
+            joueur = str(
+                joueur
+            ).strip()
+
+            if not joueur:
+                continue
+
+            joueur_id = _stats_id_joueur(
+                joueur
+            )
+
+            joueurs[joueur_id] = {
+                "id": joueur_id,
+                "nom": joueur,
+
+                "entrainements": 0,
+                "entrainements_total": 0,
+
+                "matchs": 0,
+                "matchs_total": 0,
+
+                "total_present": 0,
+                "total_evenements": 0,
+
+                "pourcentage_presence": 0,
+            }
+
+    # --------------------------------------------------------
+    # 4. Calcul des statistiques
+    # --------------------------------------------------------
+
+    for evenement in evenements:
+
+        event_uid = evenement.get(
+            "event_uid"
+        )
+
+        type_evt = (
+            _stats_normaliser_type(
+                evenement.get(
+                    "type",
+                    ""
+                )
+            )
+        )
+
+        # ----------------------------------------------------
+        # Joueurs réellement convoqués
+        # ----------------------------------------------------
+
+        joueurs_convoques = evenement.get(
+            "joueurs_convoques",
+            []
+        )
+
+        if not isinstance(
+            joueurs_convoques,
+            list
+        ):
+            joueurs_convoques = []
+
+        # Ensemble des joueurs convoqués
+        joueurs_convoques_ids = set()
+
+        for joueur_conv in joueurs_convoques:
+
+            # Format possible :
+            # {"nom": "...", "prenom": "..."}
+            if isinstance(
+                joueur_conv,
+                dict
+            ):
+
+                nom = str(
+                    joueur_conv.get(
+                        "nom",
+                        ""
+                    )
+                ).strip()
+
+                prenom = str(
+                    joueur_conv.get(
+                        "prenom",
+                        ""
+                    )
+                ).strip()
+
+                nom_complet = (
+                    f"{nom} {prenom}"
+                ).strip()
+
+            else:
+
+                nom_complet = str(
+                    joueur_conv
+                ).strip()
+
+            if not nom_complet:
+                continue
+
+            joueur_id = _stats_id_joueur(
+                nom_complet
+            )
+
+            joueurs_convoques_ids.add(
+                joueur_id
+            )
+
+            # Si le joueur n'existe plus dans
+            # users, on peut quand même conserver
+            # son historique.
+            if joueur_id not in joueurs:
+
+                joueurs[joueur_id] = {
+                    "id": joueur_id,
+                    "nom": nom_complet,
+
+                    "entrainements": 0,
+                    "entrainements_total": 0,
+
+                    "matchs": 0,
+                    "matchs_total": 0,
+
+                    "total_present": 0,
+                    "total_evenements": 0,
+
+                    "pourcentage_presence": 0,
+                }
+
+        # ----------------------------------------------------
+        # Votes actuels
+        # ----------------------------------------------------
+
+        votes_ref = (
+            events_ref
+            .document(event_uid)
+            .collection("votes")
+        )
+
+        votes_docs = votes_ref.stream()
+
+        votes_par_joueur = {}
+
+        for vote_doc in votes_docs:
+
+            vote_data = (
+                vote_doc.to_dict()
+                or {}
+            )
+
+            joueur_id = vote_doc.id
+
+            # Les coachs ne sont pas comptés
+            if vote_data.get(
+                "est_coach",
+                False
+            ):
+                continue
+
+            votes_par_joueur[joueur_id] = (
+                vote_data
+            )
+
+        # ----------------------------------------------------
+        # TOTAL : basé sur les joueurs convoqués
+        # ----------------------------------------------------
+
+        for joueur_id in joueurs_convoques_ids:
+
+            joueur_data = joueurs.get(
+                joueur_id
+            )
+
+            if not joueur_data:
+                continue
+
+            if type_evt == "ENTRAINEMENT":
+
+                joueur_data[
+                    "entrainements_total"
+                ] += 1
+
+            elif type_evt == "MATCH":
+
+                joueur_data[
+                    "matchs_total"
+                ] += 1
+
+        # ----------------------------------------------------
+        # PRESENCES : basées sur le dernier vote
+        # ----------------------------------------------------
+
+        for joueur_id, vote_data in (
+            votes_par_joueur.items()
+        ):
+
+            if joueur_id not in joueurs:
+                continue
+
+            choix = str(
+                vote_data.get(
+                    "disponibilite",
+                    vote_data.get(
+                        "choix",
+                        ""
+                    )
+                )
+                or ""
+            ).strip().upper()
+
+            est_present = choix in (
+                "PRESENT",
+                "PRÉSENT",
+                "PRESENT(E)",
+                "PRÉSENT(E)",
+                "OUI",
+                "DISPONIBLE",
+                "PARTICIPE",
+                "PARTICIPERA",
+            )
+
+            if not est_present:
+                continue
+
+            joueurs[joueur_id][
+                "total_present"
+            ] += 1
+
+            if type_evt == "ENTRAINEMENT":
+
+                joueurs[joueur_id][
+                    "entrainements"
+                ] += 1
+
+            elif type_evt == "MATCH":
+
+                joueurs[joueur_id][
+                    "matchs"
+                ] += 1
+
+    # --------------------------------------------------------
+    # 5. Pourcentages
+    # --------------------------------------------------------
+
+    resultats = []
+
+    for joueur in joueurs.values():
+
+        total = (
+            joueur[
+                "entrainements_total"
+            ]
+            +
+            joueur[
+                "matchs_total"
+            ]
+        )
+
+        joueur[
+            "total_evenements"
+        ] = total
+
+        if total > 0:
+
+            joueur[
+                "pourcentage_presence"
+            ] = round(
+                (
+                    joueur[
+                        "total_present"
+                    ]
+                    / total
+                ) * 100,
+                1
+            )
+
+        else:
+
+            joueur[
+                "pourcentage_presence"
+            ] = 0
+
+        resultats.append(
+            joueur
+        )
+
+    resultats.sort(
+        key=lambda x:
+            str(
+                x.get(
+                    "nom",
+                    ""
+                )
+            ).lower()
+    )
+
+    # --------------------------------------------------------
+    # 6. Réponse
+    # --------------------------------------------------------
+
+    return {
+        "categorie": categorie,
+
+        "nombre_evenements": len(
+            evenements
+        ),
+
+        "nombre_matchs": sum(
+            1
+            for e in evenements
+            if _stats_normaliser_type(
+                e.get(
+                    "type",
+                    ""
+                )
+            ) == "MATCH"
+        ),
+
+        "nombre_entrainements": sum(
+            1
+            for e in evenements
+            if _stats_normaliser_type(
+                e.get(
+                    "type",
+                    ""
+                )
+            ) == "ENTRAINEMENT"
+        ),
+
+        "joueurs": resultats,
+    }
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
