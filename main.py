@@ -1009,9 +1009,14 @@ def enregistrer_vote(
                 joueurs_lies[0] if joueurs_lies else utilisateur_connecte
             )
         is_coach = str(nom_identifiant_vote).upper().startswith("COACH_")
+        
+        # Génération de la date et heure actuelle au même format que le reste de votre appli
+        date_heure_actuelle = datetime.now().strftime("%d/%m/%Y à %H:%M")
+
         vote_updates = {
             f"votes.{nom_identifiant_vote}.dernier_modificateur": utilisateur_connecte,
             f"votes.{nom_identifiant_vote}.est_coach": is_coach,
+            f"votes.{nom_identifiant_vote}.timestamp": date_heure_actuelle,  # <--- Ajout de l'horodatage ici
         }
         if vote.choix is not None:
             vote_updates[f"votes.{nom_identifiant_vote}.disponibilite"] = vote.choix
@@ -1023,6 +1028,7 @@ def enregistrer_vote(
             vote_updates[f"votes.{nom_identifiant_vote}.choix_multiple"] = vote.choix_multiple
         if vote.nombre_de_places is not None:
             vote_updates[f"votes.{nom_identifiant_vote}.nombre_de_places"] = vote.nombre_de_places
+            
         doc_ref = db.collection(f"convocations_{categorie}").document(vote.id_sondage)
         doc_ref.update(vote_updates)
         return {
