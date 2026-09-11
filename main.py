@@ -1255,33 +1255,39 @@ def update_convocations(
         date_evt = data_dict.get("date", "")
         est_mod = data_dict.get("est_modification", False)
         motif = data_dict.get("dernier_commit", "").strip()
-        if type_evt == "ENTRAINEMENT":
-            nom_affiche = titre_evt if titre_evt else "Entraînement"
-            type_libelle = "l'entraînement"
-        elif type_evt == "MATCH":
-            nom_affiche = adversaire if adversaire else match_id
-            type_libelle = f"le match contre {nom_affiche}"
-        else:
-            nom_affiche = titre_evt if titre_evt else match_id
-            type_libelle = f"l'événement {nom_affiche}"
-        if est_mod:
-            titre_notif = f"FCVV - Modification ({categorie})"
-            corps_notif = f"Modification concernant {type_libelle} ({date_evt})."
-            if motif:
-                corps_notif += f"\nMotif : {motif}"
+        
+        # Si c'est une modification et que le dernier commit est vide, on n'envoie pas de notification
+        if est_mod and not motif:
+            print(f"[NOTIF] Modification ignoree (dernier_commit vide) pour {match_id}")
         else:
             if type_evt == "ENTRAINEMENT":
-                corps_notif = (
-                    f"Nouvel entraînement : {nom_affiche} ({date_evt})".strip()
-                )
-                titre_notif = f"FCVV - Entraînement ({categorie})"
+                nom_affiche = titre_evt if titre_evt else "Entraînement"
+                type_libelle = "l'entraînement"
             elif type_evt == "MATCH":
-                corps_notif = f"Match contre {nom_affiche} ({date_evt})".strip()
-                titre_notif = f"FCVV - Nouvelle Convocation ({categorie})"
+                nom_affiche = adversaire if adversaire else match_id
+                type_libelle = f"le match contre {nom_affiche}"
             else:
-                corps_notif = f"Événement : {nom_affiche} ({date_evt})".strip()
-                titre_notif = f"FCVV - Nouvel Événement ({categorie})"
-        background_tasks.add_task(envoyer_notif_push, categorie, titre_notif, corps_notif, notif_type="evenement", match_id=match_id, sender=nom_parent)
+                nom_affiche = titre_evt if titre_evt else match_id
+                type_libelle = f"l'événement {nom_affiche}"
+            if est_mod:
+                titre_notif = f"FCVV - Modification ({categorie})"
+                corps_notif = f"Modification concernant {type_libelle} ({date_evt})."
+                if motif:
+                    corps_notif += f"\nMotif : {motif}"
+            else:
+                if type_evt == "ENTRAINEMENT":
+                    corps_notif = (
+                        f"Nouvel entraînement : {nom_affiche} ({date_evt})".strip()
+                    )
+                    titre_notif = f"FCVV - Entraînement ({categorie})"
+                elif type_evt == "MATCH":
+                    corps_notif = f"Match contre {nom_affiche} ({date_evt})".strip()
+                    titre_notif = f"FCVV - Nouvelle Convocation ({categorie})"
+                else:
+                    corps_notif = f"Événement : {nom_affiche} ({date_evt})".strip()
+                    titre_notif = f"FCVV - Nouvel Événement ({categorie})"
+            background_tasks.add_task(envoyer_notif_push, categorie, titre_notif, corps_notif, notif_type="evenement", match_id=match_id, sender=nom_parent)
+            
         return {"status": "updated", "id": match_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
