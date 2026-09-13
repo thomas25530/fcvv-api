@@ -3254,6 +3254,7 @@ def envoyer_notif_convocation_token(
         return False
 
     try:
+
         # ----------------------------------------------------
         # Payload data
         # ----------------------------------------------------
@@ -3268,10 +3269,38 @@ def envoyer_notif_convocation_token(
         }
 
         # ----------------------------------------------------
+        # Configuration Android
+        # ----------------------------------------------------
+
+        android_config = messaging.AndroidConfig(
+            priority="high",
+            notification=messaging.AndroidNotification(
+                icon="ic_notification",
+                channel_id="fcvv_high_priority_v2",
+            )
+        )
+
+        # ----------------------------------------------------
+        # Configuration APNS (iOS)
+        # ----------------------------------------------------
+
+        apns_config = messaging.APNSConfig(
+            headers={
+                "apns-priority": "10",
+            },
+            payload=messaging.APNSPayload(
+                aps=messaging.Aps(
+                    sound="default",
+                )
+            ),
+        )
+
+        # ----------------------------------------------------
         # Message FCM
         # ----------------------------------------------------
 
         message = messaging.Message(
+
             notification=messaging.Notification(
                 title=titre,
                 body=corps,
@@ -3279,22 +3308,11 @@ def envoyer_notif_convocation_token(
 
             data=data_payload,
 
+            android=android_config,
+
+            apns=apns_config,
+
             token=fcm_token,
-
-            android=messaging.AndroidConfig(
-                priority="high",
-            ),
-
-            apns=messaging.APNSConfig(
-                headers={
-                    "apns-priority": "10",
-                },
-                payload=messaging.APNSPayload(
-                    aps=messaging.Aps(
-                        sound="default",
-                    )
-                ),
-            ),
         )
 
         # ----------------------------------------------------
