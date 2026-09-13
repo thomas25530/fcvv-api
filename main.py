@@ -1194,103 +1194,597 @@ def update_convocations(
     nom_parent: Optional[str] = Header(None, alias="nom_parent"),
 ):
     check_db()
+
     if not nom_parent or not verifier_si_admin(nom_parent, categorie):
         raise HTTPException(status_code=403, detail="Accès refusé")
+
     try:
         data_dict = payload.model_dump()
+
         type_evt = data_dict.get("type", "EVENEMENT").upper()
-        date_brute = data_dict.get("date", "").replace("/", "-")
+
+        date_evt = str(
+            data_dict.get("date", "")
+        ).strip()
+
+        date_brute = date_evt.replace("/", "-")
+
+        adversaire = str(
+            data_dict.get("adversaire", "")
+        ).strip()
+
         est_un_nouveau = (
             not match_id
             or match_id == "Nouvel événement"
             or match_id.strip() == ""
         )
+
         type_incoherent = (
-            type_evt == "MATCH" and not match_id.startswith("match_")
+            type_evt == "MATCH"
+            and not match_id.startswith("match_")
         ) or (
             type_evt == "ENTRAINEMENT"
             and not match_id.startswith("entrainement_")
         )
+
+        # ==========================================================
+        # 🔄 GÉNÉRATION / CORRECTION DU MATCH_ID
+        # ==========================================================
+
         if est_un_nouveau or type_incoherent:
+
             if type_evt == "MATCH":
-                adversaire = (
-                    data_dict.get("adversaire", "inconnu")
-                    .strip()
-                    .replace(" ", "_")
-                    .lower()
-                )
-                heure_rdv = (
-                    data_dict.get("heure_rdv", "").replace(":", "h") or "00h00"
-                )
+
+                adversaire_clean = (
+                    adversaire
+                    or "inconnu"
+                ).replace(" ", "_").lower()
+
+                heure_rdv = str(
+                    data_dict.get("heure_rdv", "")
+                ).strip().replace(":", "h") or "00h00"
+
                 nouveau_match_id = (
-                    f"match_{adversaire}_{date_brute}_{heure_rdv}".strip("_")
-                )
+                    f"match_{adversaire_clean}_{date_brute}_{heure_rdv}"
+                ).strip("_")
+
             elif type_evt == "ENTRAINEMENT":
-                heure_ent = data_dict.get(
-                    "heure", data_dict.get("heure_rdv", "")
-                ).replace(":", "h") or "00h00"
+
+                heure_ent = str(
+                    data_dict.get(
+                        "heure",
+                        data_dict.get("heure_rdv", "")
+                    )
+                ).strip().replace(":", "h") or "00h00"
+
                 nouveau_match_id = (
-                    f"entrainement_{date_brute}_{heure_ent}".strip("_")
-                )
+                    f"entrainement_{date_brute}_{heure_ent}"
+                ).strip("_")
+
             else:
-                titre_evt = (
+
+                titre_evt_temp = str(
                     data_dict.get("titre", "evt")
-                    .strip()
-                    .replace(" ", "_")
-                    .lower()
-                )
-                nouveau_match_id = f"evt_{titre_evt}_{date_brute}".strip("_")
-            if not est_un_nouveau and match_id and match_id != nouveau_match_id:
+                ).strip().replace(" ", "_").lower()
+
+                nouveau_match_id = (
+                    f"evt_{titre_evt_temp}_{date_brute}"
+                ).strip("_")
+
+            # Si changement d'identifiant, suppression de l'ancien document
+            if (
+                not est_un_nouveau
+                and match_id
+                and match_id != nouveau_match_id
+            ):
                 try:
-                    db.collection(f"convocations_{categorie}").document(
-                        match_id
-                    ).delete()
+                    db.collection(
+                        f"convocations_{categorie}"
+                    ).document(match_id).delete()
                 except Exception:
                     pass
+
             match_id = nouveau_match_id
-        doc_ref = db.collection(f"convocations_{categorie}").document(match_id)
-        doc_ref.set(data_dict, merge=True)
-        titre_evt = data_dict.get("titre", "")
-        adversaire = data_dict.get("adversaire", "")
-        date_evt = data_dict.get("date", "")
-        est_mod = data_dict.get("est_modification", False)
-        motif = data_dict.get("dernier_commit", "").strip()
-        
-        # Si c'est une modification et que le dernier commit est vide, on n'envoie pas de notification
-        if est_mod and not motif:
-            print(f"[NOTIF] Modification ignoree (dernier_commit vide) pour {match_id}")
-        else:
-            if type_evt == "ENTRAINEMENT":
-                nom_affiche = titre_evt if titre_evt else "Entraînement"
-                type_libelle = "l'entraînement"
-            elif type_evt == "MATCH":
-                nom_affiche = adversaire if adversaire else match_id
-                type_libelle = f"le match contre {nom_affiche}"
-            else:
-                nom_affiche = titre_evt if titre_evt else match_id
-                type_libelle = f"l'événement {nom_affiche}"
-            if est_mod:
-                titre_notif = f"FCVV - Modification ({categorie})"
-                corps_notif = f"Modification concernant {type_libelle} ({date_evt})."
-                if motif:
-                    corps_notif += f"\nMotif : {motif}"
-            else:
-                if type_evt == "ENTRAINEMENT":
-                    corps_notif = (
-                        f"Nouvel entraînement : {nom_affiche} ({date_evt})".strip()
+
+        # ==========================================================
+        # 📄 DOCUMENT CIBLE
+        # ==========================================================
+
+        doc_ref = db.collection(
+            f"convocations_{categorie}"
+        ).document(match_id)
+
+        # ==========================================================
+        # 🔎 RÉCUPÉRATION DE L'ANCIENNE CONVOCATION
+        # ==========================================================
+
+        ancien_data = {}
+
+        try:
+            ancien_snapshot = doc_ref.get()
+
+            if ancien_snapshot.exists:
+                ancien_data = (
+                    ancien_snapshot.to_dict()
+                    or {}
+                )
+
+        except Exception as e:
+
+            print(
+                "[FCM CONVOCATION] "
+                f"Impossible de récupérer l'ancienne convocation : {e}"
+            )
+
+        anciens_joueurs_convoques = ancien_data.get(
+            "joueurs_convoques",
+            []
+        )
+
+        if not isinstance(
+            anciens_joueurs_convoques,
+            list
+        ):
+            anciens_joueurs_convoques = []
+
+        # ==========================================================
+        # 💾 SAUVEGARDE FIRESTORE
+        # ==========================================================
+
+        doc_ref.set(
+            data_dict,
+            merge=True
+        )
+
+        # ==========================================================
+        # 🔔 NOTIFICATIONS CIBLÉES
+        #    UNIQUEMENT POUR LES NOUVEAUX CONVOQUÉS
+        # ==========================================================
+
+        if type_evt == "MATCH":
+
+            activer_convocation = bool(
+                data_dict.get(
+                    "activer_convocation",
+                    False
+                )
+            )
+
+            joueurs_actuels = data_dict.get(
+                "joueurs_convoques",
+                []
+            )
+
+            if not isinstance(
+                joueurs_actuels,
+                list
+            ):
+                joueurs_actuels = []
+
+            # ------------------------------------------------------
+            # Normalisation joueur
+            # ------------------------------------------------------
+
+            def normaliser_joueur(joueur):
+
+                if isinstance(joueur, dict):
+
+                    nom = str(
+                        joueur.get("nom", "")
+                    ).strip()
+
+                    prenom = str(
+                        joueur.get("prenom", "")
+                    ).strip()
+
+                    return (
+                        f"{nom} {prenom}"
+                    ).strip().casefold()
+
+                return str(
+                    joueur
+                ).strip().casefold()
+
+            # ------------------------------------------------------
+            # Anciens joueurs
+            # ------------------------------------------------------
+
+            anciens_identites = set()
+
+            for joueur in anciens_joueurs_convoques:
+
+                identite = normaliser_joueur(
+                    joueur
+                )
+
+                if identite:
+                    anciens_identites.add(
+                        identite
                     )
-                    titre_notif = f"FCVV - Entraînement ({categorie})"
+
+            # ------------------------------------------------------
+            # Détection des NOUVEAUX convoqués
+            # ------------------------------------------------------
+
+            joueurs_nouvellement_convoques = []
+
+            for joueur in joueurs_actuels:
+
+                identite = normaliser_joueur(
+                    joueur
+                )
+
+                if not identite:
+                    continue
+
+                if identite not in anciens_identites:
+
+                    joueurs_nouvellement_convoques.append(
+                        joueur
+                    )
+
+            print(
+                "[FCM CONVOCATION] "
+                f"match={match_id} | "
+                f"convocation_active={activer_convocation} | "
+                f"anciens={len(anciens_joueurs_convoques)} | "
+                f"actuels={len(joueurs_actuels)} | "
+                f"nouveaux={len(joueurs_nouvellement_convoques)}"
+            )
+
+            # ------------------------------------------------------
+            # Envoi uniquement si les convocations sont actives
+            # ------------------------------------------------------
+
+            if (
+                activer_convocation
+                and joueurs_nouvellement_convoques
+            ):
+
+                titre_convocation = (
+                    f"FCVV - Convocation ({categorie})"
+                )
+
+                adversaire_affiche = (
+                    adversaire
+                    or "match"
+                )
+
+                date_affichee = (
+                    date_evt
+                    or "date à confirmer"
+                )
+
+                heure_affichee = str(
+                    data_dict.get(
+                        "heure_sur_place",
+                        ""
+                    )
+                ).strip()
+
+                if not heure_affichee:
+
+                    heure_affichee = str(
+                        data_dict.get(
+                            "heure_rdv",
+                            ""
+                        )
+                    ).strip()
+
+                # --------------------------------------------------
+                # Préparation des informations du match
+                # --------------------------------------------------
+
+                corps_base = (
+                    f"est convoqué pour le match "
+                    f"contre {adversaire_affiche} "
+                    f"le {date_affichee}"
+                )
+
+                if heure_affichee:
+                    corps_base += (
+                        f" à {heure_affichee}"
+                    )
+
+                # --------------------------------------------------
+                # Fonction d'envoi en arrière-plan
+                # --------------------------------------------------
+
+                def envoyer_notifications_nouveaux_convoques():
+
+                    tokens_deja_notifies = set()
+
+                    for joueur in joueurs_nouvellement_convoques:
+
+                        # ------------------------------------------
+                        # Récupération nom + catégorie
+                        # ------------------------------------------
+
+                        if isinstance(joueur, dict):
+
+                            nom = str(
+                                joueur.get(
+                                    "nom",
+                                    ""
+                                )
+                            ).strip()
+
+                            prenom = str(
+                                joueur.get(
+                                    "prenom",
+                                    ""
+                                )
+                            ).strip()
+
+                            nom_recherche = (
+                                f"{nom} {prenom}"
+                            ).strip()
+
+                            categorie_joueur = str(
+                                joueur.get(
+                                    "categorie",
+                                    categorie
+                                )
+                            ).strip() or categorie
+
+                        else:
+
+                            nom_recherche = str(
+                                joueur
+                            ).strip()
+
+                            categorie_joueur = categorie
+
+                        if not nom_recherche:
+                            continue
+
+                        # ------------------------------------------
+                        # Recherche des tokens des parents
+                        # ------------------------------------------
+
+                        tokens = (
+                            recuperer_tokens_fcm_pour_joueur(
+                                joueur_nom=nom_recherche,
+                                categorie=categorie_joueur
+                            )
+                        )
+
+                        if not tokens:
+
+                            print(
+                                "[FCM CONVOCATION] "
+                                f"Aucun token pour "
+                                f"{nom_recherche} "
+                                f"(categorie={categorie_joueur})"
+                            )
+
+                            continue
+
+                        # ------------------------------------------
+                        # Notification personnalisée au parent
+                        # ------------------------------------------
+
+                        corps_convocation = (
+                            f"{nom_recherche} "
+                            f"{corps_base}."
+                        )
+
+                        for fcm_token in tokens:
+
+                            if fcm_token in tokens_deja_notifies:
+                                continue
+
+                            succes = (
+                                envoyer_notif_convocation_token(
+                                    fcm_token=fcm_token,
+                                    titre=titre_convocation,
+                                    corps=corps_convocation,
+                                    categorie=categorie,
+                                    match_id=match_id,
+                                )
+                            )
+
+                            if succes:
+                                tokens_deja_notifies.add(
+                                    fcm_token
+                                )
+
+                    print(
+                        "[FCM CONVOCATION] "
+                        f"Notifications terminées pour "
+                        f"match={match_id} | "
+                        f"tokens_notifies="
+                        f"{len(tokens_deja_notifies)}"
+                    )
+
+                # ----------------------------------------------
+                # Exécution en arrière-plan
+                # ----------------------------------------------
+
+                background_tasks.add_task(
+                    envoyer_notifications_nouveaux_convoques
+                )
+
+        # ==========================================================
+        # 🔔 NOTIFICATION GÉNÉRALE EXISTANTE
+        # ==========================================================
+
+        titre_evt = str(
+            data_dict.get(
+                "titre",
+                ""
+            )
+        ).strip()
+
+        adversaire = str(
+            data_dict.get(
+                "adversaire",
+                ""
+            )
+        ).strip()
+
+        date_evt = str(
+            data_dict.get(
+                "date",
+                ""
+            )
+        ).strip()
+
+        est_mod = data_dict.get(
+            "est_modification",
+            False
+        )
+
+        motif = str(
+            data_dict.get(
+                "dernier_commit",
+                ""
+            )
+        ).strip()
+
+        # Si c'est une modification et que le dernier commit
+        # est vide, on n'envoie pas la notification générale.
+
+        if est_mod and not motif:
+
+            print(
+                "[NOTIF] Modification ignoree "
+                f"(dernier_commit vide) pour {match_id}"
+            )
+
+        else:
+
+            if type_evt == "ENTRAINEMENT":
+
+                nom_affiche = (
+                    titre_evt
+                    if titre_evt
+                    else "Entraînement"
+                )
+
+                type_libelle = (
+                    "l'entraînement"
+                )
+
+            elif type_evt == "MATCH":
+
+                nom_affiche = (
+                    adversaire
+                    if adversaire
+                    else match_id
+                )
+
+                type_libelle = (
+                    f"le match contre {nom_affiche}"
+                )
+
+            else:
+
+                nom_affiche = (
+                    titre_evt
+                    if titre_evt
+                    else match_id
+                )
+
+                type_libelle = (
+                    f"l'événement {nom_affiche}"
+                )
+
+            # ------------------------------------------------------
+            # Modification
+            # ------------------------------------------------------
+
+            if est_mod:
+
+                titre_notif = (
+                    f"FCVV - Modification ({categorie})"
+                )
+
+                corps_notif = (
+                    f"Modification concernant "
+                    f"{type_libelle} "
+                    f"({date_evt})."
+                )
+
+                if motif:
+
+                    corps_notif += (
+                        f"\nMotif : {motif}"
+                    )
+
+            # ------------------------------------------------------
+            # Nouvelle création
+            # ------------------------------------------------------
+
+            else:
+
+                if type_evt == "ENTRAINEMENT":
+
+                    corps_notif = (
+                        f"Nouvel entraînement : "
+                        f"{nom_affiche} "
+                        f"({date_evt})"
+                    ).strip()
+
+                    titre_notif = (
+                        f"FCVV - Entraînement ({categorie})"
+                    )
+
                 elif type_evt == "MATCH":
-                    corps_notif = f"Match contre {nom_affiche} ({date_evt})".strip()
-                    titre_notif = f"FCVV - Nouvelle Convocation ({categorie})"
+
+                    corps_notif = (
+                        f"Match contre "
+                        f"{nom_affiche} "
+                        f"({date_evt})"
+                    ).strip()
+
+                    titre_notif = (
+                        f"FCVV - Nouvelle Convocation "
+                        f"({categorie})"
+                    )
+
                 else:
-                    corps_notif = f"Événement : {nom_affiche} ({date_evt})".strip()
-                    titre_notif = f"FCVV - Nouvel Événement ({categorie})"
-            background_tasks.add_task(envoyer_notif_push, categorie, titre_notif, corps_notif, notif_type="evenement", match_id=match_id, sender=nom_parent)
-            
-        return {"status": "updated", "id": match_id}
+
+                    corps_notif = (
+                        f"Événement : "
+                        f"{nom_affiche} "
+                        f"({date_evt})"
+                    ).strip()
+
+                    titre_notif = (
+                        f"FCVV - Nouvel Événement "
+                        f"({categorie})"
+                    )
+
+            background_tasks.add_task(
+                envoyer_notif_push,
+                categorie,
+                titre_notif,
+                corps_notif,
+                notif_type="evenement",
+                match_id=match_id,
+                sender=nom_parent
+            )
+
+        # ==========================================================
+        # ✅ RÉPONSE
+        # ==========================================================
+
+        return {
+            "status": "updated",
+            "id": match_id
+        }
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+
+        print(
+            f"[API] Erreur update_convocations : {e}"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 @app.put("/convocations/batch-update/{categorie}")
 def batch_update_convocations(
@@ -2720,6 +3214,195 @@ def recuperer_stats(
 
         "joueurs": resultats,
     }
+
+# ============================================================
+# FCM - NOTIFICATION CIBLEE CONVOCATION MATCH
+# ============================================================
+#
+# Cette fonction est volontairement indépendante de
+# envoyer_notif_push_token().
+#
+# Elle reprend le même mécanisme FCM :
+#   - Android HIGH priority
+#   - APNS
+#   - notification title/body
+#   - data payload
+#   - envoi sur un token précis
+#
+# Elle ajoute simplement match_id dans le payload data.
+#
+# ============================================================
+
+def envoyer_notif_convocation_token(
+    fcm_token: str,
+    titre: str,
+    corps: str,
+    categorie: str,
+    match_id: str,
+):
+    """
+    Envoie une notification FCM de convocation sur un token précis.
+
+    Fonction indépendante de envoyer_notif_push_token().
+    Ne modifie aucune fonction existante.
+    """
+
+    if not fcm_token:
+        print(
+            "[FCM CONVOCATION] Aucun token FCM fourni."
+        )
+        return False
+
+    try:
+        # ----------------------------------------------------
+        # Payload data
+        # ----------------------------------------------------
+
+        data_payload = {
+            "title": titre,
+            "body": corps,
+            "categorie": categorie,
+            "notif_type": "convocation",
+            "open_page": "vestiaire",
+            "match_id": str(match_id),
+        }
+
+        # ----------------------------------------------------
+        # Message FCM
+        # ----------------------------------------------------
+
+        message = messaging.Message(
+            notification=messaging.Notification(
+                title=titre,
+                body=corps,
+            ),
+
+            data=data_payload,
+
+            token=fcm_token,
+
+            android=messaging.AndroidConfig(
+                priority="high",
+            ),
+
+            apns=messaging.APNSConfig(
+                headers={
+                    "apns-priority": "10",
+                },
+                payload=messaging.APNSPayload(
+                    aps=messaging.Aps(
+                        sound="default",
+                    )
+                ),
+            ),
+        )
+
+        # ----------------------------------------------------
+        # Envoi
+        # ----------------------------------------------------
+
+        response = messaging.send(message)
+
+        print(
+            f"[FCM CONVOCATION] Notification envoyée "
+            f"sur le token {fcm_token[:20]}... "
+            f"(match_id={match_id}) : {response}"
+        )
+
+        return True
+
+    except Exception as e:
+
+        print(
+            f"[FCM CONVOCATION] Erreur envoi notification : "
+            f"{e}"
+        )
+
+        return False
+
+def recuperer_tokens_fcm_pour_joueur(
+    joueur_nom: str,
+    categorie: str
+) -> list[str]:
+    """
+    Recherche dans users les parents associés à un joueur
+    pour une catégorie donnée et retourne leurs tokens FCM.
+    """
+
+    check_db()
+
+    joueur_recherche = str(joueur_nom or "").strip()
+
+    if not joueur_recherche:
+        return []
+
+    tokens_trouves = []
+
+    try:
+        docs = db.collection("users").stream()
+
+        for doc in docs:
+
+            data = doc.to_dict()
+
+            joueurs_par_categorie = data.get(
+                "joueurs_par_categorie",
+                {}
+            )
+
+            if not isinstance(joueurs_par_categorie, dict):
+                continue
+
+            joueurs = joueurs_par_categorie.get(
+                categorie,
+                []
+            )
+
+            if not isinstance(joueurs, list):
+                continue
+
+            joueurs_normalises = [
+                str(j).strip().casefold()
+                for j in joueurs
+                if str(j).strip()
+            ]
+
+            if joueur_recherche.casefold() not in joueurs_normalises:
+                continue
+
+            fcm_tokens = data.get(
+                "fcm_tokens",
+                []
+            )
+
+            if not isinstance(fcm_tokens, list):
+                continue
+
+            for token in fcm_tokens:
+
+                token = str(token).strip()
+
+                if token and token not in tokens_trouves:
+                    tokens_trouves.append(token)
+
+        print(
+            f"[FCM CONVOCATION] "
+            f"joueur={joueur_recherche} | "
+            f"categorie={categorie} | "
+            f"tokens={len(tokens_trouves)}"
+        )
+
+        return tokens_trouves
+
+    except Exception as e:
+
+        print(
+            f"[FCM CONVOCATION] "
+            f"Erreur recherche joueur={joueur_recherche} : {e}"
+        )
+
+        return []
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
