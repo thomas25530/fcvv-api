@@ -1958,6 +1958,137 @@ def stats_enregistrer_vote(
             detail=str(e)
         )
 
+@app.post("/stats/historique/evenement/{categorie}/{match_id}")
+def stats_creer_evenement(
+    categorie: str,
+    match_id: str,
+):
+    check_db()
+
+    event_ref = (
+        db.collection(f"convocations_{categorie}")
+        .document(match_id)
+    )
+
+    event_snapshot = event_ref.get()
+
+    if not event_snapshot.exists:
+        raise HTTPException(
+            status_code=404,
+            detail="Événement non trouvé"
+        )
+
+    evenement = event_snapshot.to_dict() or {}
+
+    # ---------------------------------------------------------
+    # UNIQUEMENT MATCH et ENTRAINEMENT pour les statistiques
+    # ---------------------------------------------------------
+    type_evenement = _stats_normaliser_type(
+        evenement.get("type", "")
+    )
+
+    if type_evenement not in ("MATCH", "ENTRAINEMENT"):
+        return {
+            "status": "ignored",
+            "event_uid": None,
+            "match_id": match_id,
+            "message": (
+                "Cet événement n'est pas pris en compte "
+                "dans les statistiques."
+            ),
+        }
+
+    # ---------------------------------------------------------
+    # Récupération ou création de l'identifiant statistique
+    # ---------------------------------------------------------
+    event_uid = evenement.get("stats_event_uid")
+
+    if not event_uid:
+        event_uid = _stats_creer_event_uid()
+
+        event_ref.update({
+            "stats_event_uid": event_uid
+        })
+
+    # ---------------------------------------------------------
+    # Joueurs convoqués
+    # ---------------------------------------------------------
+    joueurs_convoques = evenement.get(
+        "joueurs_convoques",
+        []
+    )
+
+    if not isinstance(joueurs_convoques, list):
+        joueurs_convoques = []
+
+    # ---------------------------------------------------------
+    # Référence de l'événement dans l'historique des stats
+    # ---------------------------------------------------------
+    historique_event_ref = (
+        db.collection("historique_presences")
+        .document(categorie)
+        .collection("evenements")
+        .document(event_uid)
+    )
+
+    # ---------------------------------------------------------
+    # Création / mise à jour de l'événement statistique
+    # ---------------------------------------------------------
+    historique_event_ref.set(
+        {
+            "event_uid": event_uid,
+            "match_id": match_id,
+            "categorie": categorie,
+            "type": type_evenement,
+
+            "titre": evenement.get(
+                "titre",
+                ""
+            ),
+
+            "adversaire": evenement.get(
+                "adversaire",
+                ""
+            ),
+
+            "date": evenement.get(
+                "date",
+                ""
+            ),
+
+            "heure": (
+                evenement.get("heure")
+                or evenement.get("heure_rdv")
+                or evenement.get("heure_sur_place")
+                or evenement.get("heure_match")
+                or ""
+            ),
+
+            "lieu": evenement.get(
+                "lieu",
+                ""
+            ),
+
+            "joueurs_convoques": joueurs_convoques,
+
+            "deleted": False,
+
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        },
+        merge=True
+    )
+
+    return {
+        "status": "success",
+        "event_uid": event_uid,
+        "match_id": match_id,
+        "type": type_evenement,
+        "message": (
+            "Match ou entraînement initialisé "
+            "dans les statistiques."
+        ),
+    }
+
 
 # ============================================================
 # SUPPRESSION HISTORIQUE
