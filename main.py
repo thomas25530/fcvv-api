@@ -653,7 +653,6 @@ def envoyer_notif_push_token(
                 channel_id="fcvv_high_priority_v2"
             )
         )
-
         # ---------------------------------------------------------
         # Configuration APNS (iOS)
         # ---------------------------------------------------------
@@ -671,7 +670,6 @@ def envoyer_notif_push_token(
                 )
             )
         )
-
         # ---------------------------------------------------------
         # Data Payload
         # ---------------------------------------------------------
@@ -682,7 +680,6 @@ def envoyer_notif_push_token(
             "notif_type": notif_type,
             "open_page": "vestiaire"
         }
-
         # ---------------------------------------------------------
         # Message FCM
         #
@@ -724,6 +721,115 @@ def envoyer_notif_push_token(
             f"Impossible d'envoyer la notification : {e}"
         )
         return False
+
+# ============================================================
+# FCM - NOTIFICATION CIBLEE CONVOCATION MATCH
+# ============================================================
+#
+# Cette fonction est volontairement indépendante de
+# envoyer_notif_push_token().
+#
+# Elle reprend le même mécanisme FCM :
+#   - Android HIGH priority
+#   - APNS
+#   - notification title/body
+#   - data payload
+#   - envoi sur un token précis
+#
+# Elle ajoute simplement match_id dans le payload data.
+#
+# ============================================================
+
+def envoyer_notif_convocation_token(fcm_token: str,titre: str,corps: str,categorie: str,match_id: str,):
+    """
+    Envoie une notification FCM de convocation sur un token précis.
+    Fonction indépendante de envoyer_notif_push_token().
+    Ne modifie aucune fonction existante.
+    """
+    if not fcm_token:
+        print("[FCM CONVOCATION] Aucun token FCM fourni.")
+        return False
+    try:
+        # ----------------------------------------------------
+        # Payload data
+        # ----------------------------------------------------
+        data_payload = {"title": titre,"body": corps,"categorie": categorie,"notif_type": "convocation","open_page": "vestiaire","match_id": str(match_id),}
+        # ----------------------------------------------------
+        # Configuration Android
+        # ----------------------------------------------------
+        android_config = messaging.AndroidConfig(priority="high",notification=messaging.AndroidNotification(icon="ic_notification",channel_id="fcvv_high_priority_v2",))
+        # ----------------------------------------------------
+        # Configuration APNS (iOS)
+        # ----------------------------------------------------
+        apns_config = messaging.APNSConfig(headers={"apns-priority": "10",},payload=messaging.APNSPayload(aps=messaging.Aps(sound="default",)),)
+        # ----------------------------------------------------
+        # Message FCM
+        # ----------------------------------------------------
+        message = messaging.Message(notification=messaging.Notification(title=titre,body=corps,),data=data_payload,android=android_config,apns=apns_config,token=fcm_token,)
+        # ----------------------------------------------------
+        # Envoi
+        # ----------------------------------------------------
+        response = messaging.send(message)
+        print(
+            f"[FCM CONVOCATION] Notification envoyee "
+            f"sur le token {fcm_token[:20]}... "
+            f"(match_id={match_id}) : {response}"
+        )
+        return True
+    except Exception as e:
+        print(
+            f"[FCM CONVOCATION] Erreur envoi notification : "
+            f"{e}"
+        )
+        return False
+
+def recuperer_tokens_fcm_pour_joueur(joueur_nom: str,categorie: str) -> list[str]:
+    """
+    Recherche dans users les parents associés à un joueur
+    pour une catégorie donnée et retourne leurs tokens FCM.
+    """
+    check_db()
+    joueur_recherche = str(joueur_nom or "").strip()
+    if not joueur_recherche:
+        return []
+    tokens_trouves = []
+    try:
+        docs = db.collection("users").stream()
+        for doc in docs:
+            data = doc.to_dict()
+            joueurs_par_categorie = data.get("joueurs_par_categorie",{})
+            if not isinstance(joueurs_par_categorie, dict):
+                continue
+            joueurs = joueurs_par_categorie.get(categorie,[])
+            if not isinstance(joueurs, list):
+                continue
+            joueurs_normalises = [
+                str(j).strip().casefold()
+                for j in joueurs
+                if str(j).strip()
+            ]
+            if joueur_recherche.casefold() not in joueurs_normalises:
+                continue
+            fcm_tokens = data.get("fcm_tokens",[])
+            if not isinstance(fcm_tokens, list):
+                continue
+            for token in fcm_tokens:
+                token = str(token).strip()
+                if token and token not in tokens_trouves:
+                    tokens_trouves.append(token)
+        print(
+            f"[FCM CONVOCATION] "
+            f"joueur={joueur_recherche} | "
+            f"categorie={categorie} | "
+            f"tokens={len(tokens_trouves)}"
+        )
+        return tokens_trouves
+    except Exception as e:
+        print(
+            f"[FCM CONVOCATION] "
+            f"Erreur recherche joueur={joueur_recherche} : {e}"
+        )
+        return []
 
 # --- Routes ---
 @app.get("/")
@@ -1182,9 +1288,10 @@ def get_user_role(
     except Exception as e:
         print(f"[ERREUR ROLE GET] {e}")
         raise HTTPException(status_code=500,detail=str(e))
-##########################
+    
+####################################################
 ######## CONVOCATIONS & EVENEMENTS
-
+####################################################
 @app.put("/convocations/update/{categorie}/{match_id}")
 def update_convocations(
     categorie: str,
@@ -1194,31 +1301,19 @@ def update_convocations(
     nom_parent: Optional[str] = Header(None, alias="nom_parent"),
 ):
     check_db()
-
     if not nom_parent or not verifier_si_admin(nom_parent, categorie):
         raise HTTPException(status_code=403, detail="Accès refusé")
-
     try:
         data_dict = payload.model_dump()
-
         type_evt = data_dict.get("type", "EVENEMENT").upper()
-
-        date_evt = str(
-            data_dict.get("date", "")
-        ).strip()
-
+        date_evt = str(data_dict.get("date", "")).strip()
         date_brute = date_evt.replace("/", "-")
-
-        adversaire = str(
-            data_dict.get("adversaire", "")
-        ).strip()
-
+        adversaire = str(data_dict.get("adversaire", "")).strip()
         est_un_nouveau = (
             not match_id
             or match_id == "Nouvel événement"
             or match_id.strip() == ""
         )
-
         type_incoherent = (
             type_evt == "MATCH"
             and not match_id.startswith("match_")
@@ -1226,51 +1321,20 @@ def update_convocations(
             type_evt == "ENTRAINEMENT"
             and not match_id.startswith("entrainement_")
         )
-
         # ==========================================================
         # 🔄 GÉNÉRATION / CORRECTION DU MATCH_ID
         # ==========================================================
-
         if est_un_nouveau or type_incoherent:
-
             if type_evt == "MATCH":
-
-                adversaire_clean = (
-                    adversaire
-                    or "inconnu"
-                ).replace(" ", "_").lower()
-
-                heure_rdv = str(
-                    data_dict.get("heure_rdv", "")
-                ).strip().replace(":", "h") or "00h00"
-
-                nouveau_match_id = (
-                    f"match_{adversaire_clean}_{date_brute}_{heure_rdv}"
-                ).strip("_")
-
+                adversaire_clean = (adversaire or "inconnu").replace(" ", "_").lower()
+                heure_rdv = str(data_dict.get("heure_rdv", "")).strip().replace(":", "h") or "00h00"
+                nouveau_match_id = (f"match_{adversaire_clean}_{date_brute}_{heure_rdv}").strip("_")
             elif type_evt == "ENTRAINEMENT":
-
-                heure_ent = str(
-                    data_dict.get(
-                        "heure",
-                        data_dict.get("heure_rdv", "")
-                    )
-                ).strip().replace(":", "h") or "00h00"
-
-                nouveau_match_id = (
-                    f"entrainement_{date_brute}_{heure_ent}"
-                ).strip("_")
-
+                heure_ent = str(data_dict.get("heure",data_dict.get("heure_rdv", ""))).strip().replace(":", "h") or "00h00"
+                nouveau_match_id = (f"entrainement_{date_brute}_{heure_ent}").strip("_")
             else:
-
-                titre_evt_temp = str(
-                    data_dict.get("titre", "evt")
-                ).strip().replace(" ", "_").lower()
-
-                nouveau_match_id = (
-                    f"evt_{titre_evt_temp}_{date_brute}"
-                ).strip("_")
-
+                titre_evt_temp = str(data_dict.get("titre", "evt")).strip().replace(" ", "_").lower()
+                nouveau_match_id = (f"evt_{titre_evt_temp}_{date_brute}").strip("_")
             # Si changement d'identifiant, suppression de l'ancien document
             if (
                 not est_un_nouveau
@@ -1283,146 +1347,68 @@ def update_convocations(
                     ).document(match_id).delete()
                 except Exception:
                     pass
-
             match_id = nouveau_match_id
-
         # ==========================================================
         # 📄 DOCUMENT CIBLE
         # ==========================================================
-
-        doc_ref = db.collection(
-            f"convocations_{categorie}"
-        ).document(match_id)
-
+        doc_ref = db.collection(f"convocations_{categorie}").document(match_id)
         # ==========================================================
         # 🔎 RÉCUPÉRATION DE L'ANCIENNE CONVOCATION
         # ==========================================================
-
         ancien_data = {}
-
         try:
             ancien_snapshot = doc_ref.get()
-
             if ancien_snapshot.exists:
-                ancien_data = (
-                    ancien_snapshot.to_dict()
-                    or {}
-                )
-
+                ancien_data = (ancien_snapshot.to_dict() or {})
         except Exception as e:
-
             print(
                 "[FCM CONVOCATION] "
-                f"Impossible de récupérer l'ancienne convocation : {e}"
+                f"Impossible de recuperer l'ancienne convocation : {e}"
             )
-
-        anciens_joueurs_convoques = ancien_data.get(
-            "joueurs_convoques",
-            []
-        )
-
-        if not isinstance(
-            anciens_joueurs_convoques,
-            list
-        ):
+        anciens_joueurs_convoques = ancien_data.get("joueurs_convoques",[])
+        if not isinstance(anciens_joueurs_convoques,list):
             anciens_joueurs_convoques = []
-
         # ==========================================================
         # 💾 SAUVEGARDE FIRESTORE
         # ==========================================================
-
-        doc_ref.set(
-            data_dict,
-            merge=True
-        )
-
+        doc_ref.set(data_dict,merge=True)
         # ==========================================================
         # 🔔 NOTIFICATIONS CIBLÉES
         #    UNIQUEMENT POUR LES NOUVEAUX CONVOQUÉS
         # ==========================================================
-
         if type_evt == "MATCH":
-
-            activer_convocation = bool(
-                data_dict.get(
-                    "activer_convocation",
-                    False
-                )
-            )
-
-            joueurs_actuels = data_dict.get(
-                "joueurs_convoques",
-                []
-            )
-
-            if not isinstance(
-                joueurs_actuels,
-                list
-            ):
+            activer_convocation = bool(data_dict.get("activer_convocation",False))
+            joueurs_actuels = data_dict.get("joueurs_convoques",[])
+            if not isinstance(joueurs_actuels,list):
                 joueurs_actuels = []
-
             # ------------------------------------------------------
             # Normalisation joueur
             # ------------------------------------------------------
-
             def normaliser_joueur(joueur):
-
                 if isinstance(joueur, dict):
+                    nom = str(joueur.get("nom", "")).strip()
+                    prenom = str(joueur.get("prenom", "")).strip()
+                    return (f"{nom} {prenom}").strip().casefold()
 
-                    nom = str(
-                        joueur.get("nom", "")
-                    ).strip()
-
-                    prenom = str(
-                        joueur.get("prenom", "")
-                    ).strip()
-
-                    return (
-                        f"{nom} {prenom}"
-                    ).strip().casefold()
-
-                return str(
-                    joueur
-                ).strip().casefold()
-
+                return str(joueur).strip().casefold()
             # ------------------------------------------------------
             # Anciens joueurs
             # ------------------------------------------------------
-
             anciens_identites = set()
-
             for joueur in anciens_joueurs_convoques:
-
-                identite = normaliser_joueur(
-                    joueur
-                )
-
+                identite = normaliser_joueur(joueur)
                 if identite:
-                    anciens_identites.add(
-                        identite
-                    )
-
+                    anciens_identites.add(identite)
             # ------------------------------------------------------
             # Détection des NOUVEAUX convoqués
             # ------------------------------------------------------
-
             joueurs_nouvellement_convoques = []
-
             for joueur in joueurs_actuels:
-
-                identite = normaliser_joueur(
-                    joueur
-                )
-
+                identite = normaliser_joueur(joueur)
                 if not identite:
                     continue
-
                 if identite not in anciens_identites:
-
-                    joueurs_nouvellement_convoques.append(
-                        joueur
-                    )
-
+                    joueurs_nouvellement_convoques.append(joueur)
             print(
                 "[FCM CONVOCATION] "
                 f"match={match_id} | "
@@ -1431,360 +1417,174 @@ def update_convocations(
                 f"actuels={len(joueurs_actuels)} | "
                 f"nouveaux={len(joueurs_nouvellement_convoques)}"
             )
-
             # ------------------------------------------------------
             # Envoi uniquement si les convocations sont actives
             # ------------------------------------------------------
-
-            if (
-                activer_convocation
-                and joueurs_nouvellement_convoques
-            ):
-
-                titre_convocation = (
-                    f"FCVV - Convocation ({categorie})"
-                )
-
-                adversaire_affiche = (
-                    adversaire
-                    or "match"
-                )
-
-                date_affichee = (
-                    date_evt
-                    or "date à confirmer"
-                )
-
-                heure_affichee = str(
-                    data_dict.get(
-                        "heure_sur_place",
-                        ""
-                    )
-                ).strip()
-
+            if (activer_convocation and joueurs_nouvellement_convoques):
+                titre_convocation = (f"FCVV - Convocation ({categorie})")
+                adversaire_affiche = (adversaire or "match")
+                date_affichee = (date_evt or "date à confirmer")
+                heure_affichee = str(data_dict.get("heure_sur_place","")).strip()
                 if not heure_affichee:
-
                     heure_affichee = str(
-                        data_dict.get(
-                            "heure_rdv",
-                            ""
-                        )
-                    ).strip()
-
+                        data_dict.get("heure_rdv","")).strip()
                 # --------------------------------------------------
                 # Préparation des informations du match
                 # --------------------------------------------------
-
                 corps_base = (
-                    f"est convoqué pour le match "
+                    f"est convoqué(e) pour le match "
                     f"contre {adversaire_affiche} "
                     f"le {date_affichee}"
                 )
-
                 if heure_affichee:
                     corps_base += (
                         f" à {heure_affichee}"
                     )
-
                 # --------------------------------------------------
                 # Fonction d'envoi en arrière-plan
                 # --------------------------------------------------
-
                 def envoyer_notifications_nouveaux_convoques():
-
                     tokens_deja_notifies = set()
-
                     for joueur in joueurs_nouvellement_convoques:
-
                         # ------------------------------------------
                         # Récupération nom + catégorie
                         # ------------------------------------------
-
                         if isinstance(joueur, dict):
-
-                            nom = str(
-                                joueur.get(
-                                    "nom",
-                                    ""
-                                )
-                            ).strip()
-
-                            prenom = str(
-                                joueur.get(
-                                    "prenom",
-                                    ""
-                                )
-                            ).strip()
-
-                            nom_recherche = (
-                                f"{nom} {prenom}"
-                            ).strip()
-
-                            categorie_joueur = str(
-                                joueur.get(
-                                    "categorie",
-                                    categorie
-                                )
-                            ).strip() or categorie
-
+                            nom = str(joueur.get("nom","")).strip()
+                            prenom = str(joueur.get("prenom","")).strip()
+                            nom_recherche = (f"{nom} {prenom}").strip()
+                            categorie_joueur = str(joueur.get("categorie",categorie)).strip() or categorie
                         else:
-
-                            nom_recherche = str(
-                                joueur
-                            ).strip()
-
+                            nom_recherche = str(joueur).strip()
                             categorie_joueur = categorie
-
                         if not nom_recherche:
                             continue
-
                         # ------------------------------------------
                         # Recherche des tokens des parents
                         # ------------------------------------------
-
-                        tokens = (
-                            recuperer_tokens_fcm_pour_joueur(
-                                joueur_nom=nom_recherche,
-                                categorie=categorie_joueur
-                            )
-                        )
-
+                        tokens = (recuperer_tokens_fcm_pour_joueur(joueur_nom=nom_recherche,categorie=categorie_joueur))
                         if not tokens:
-
                             print(
                                 "[FCM CONVOCATION] "
                                 f"Aucun token pour "
                                 f"{nom_recherche} "
                                 f"(categorie={categorie_joueur})"
                             )
-
                             continue
-
                         # ------------------------------------------
                         # Notification personnalisée au parent
                         # ------------------------------------------
-
                         corps_convocation = (
                             f"{nom_recherche} "
                             f"{corps_base}."
                         )
-
                         for fcm_token in tokens:
-
                             if fcm_token in tokens_deja_notifies:
                                 continue
-
-                            succes = (
-                                envoyer_notif_convocation_token(
-                                    fcm_token=fcm_token,
-                                    titre=titre_convocation,
-                                    corps=corps_convocation,
-                                    categorie=categorie,
-                                    match_id=match_id,
-                                )
-                            )
-
+                            succes = (envoyer_notif_convocation_token(fcm_token=fcm_token,titre=titre_convocation,corps=corps_convocation,categorie=categorie,match_id=match_id,))
                             if succes:
-                                tokens_deja_notifies.add(
-                                    fcm_token
-                                )
-
+                                tokens_deja_notifies.add(fcm_token)
                     print(
                         "[FCM CONVOCATION] "
-                        f"Notifications terminées pour "
+                        f"Notifications terminees pour "
                         f"match={match_id} | "
                         f"tokens_notifies="
                         f"{len(tokens_deja_notifies)}"
                     )
-
                 # ----------------------------------------------
                 # Exécution en arrière-plan
                 # ----------------------------------------------
-
-                background_tasks.add_task(
-                    envoyer_notifications_nouveaux_convoques
-                )
-
+                background_tasks.add_task(envoyer_notifications_nouveaux_convoques)
         # ==========================================================
         # 🔔 NOTIFICATION GÉNÉRALE EXISTANTE
         # ==========================================================
-
-        titre_evt = str(
-            data_dict.get(
-                "titre",
-                ""
-            )
-        ).strip()
-
-        adversaire = str(
-            data_dict.get(
-                "adversaire",
-                ""
-            )
-        ).strip()
-
-        date_evt = str(
-            data_dict.get(
-                "date",
-                ""
-            )
-        ).strip()
-
-        est_mod = data_dict.get(
-            "est_modification",
-            False
-        )
-
-        motif = str(
-            data_dict.get(
-                "dernier_commit",
-                ""
-            )
-        ).strip()
-
+        titre_evt = str(data_dict.get("titre","")).strip()
+        adversaire = str(data_dict.get("adversaire","")).strip()
+        date_evt = str(data_dict.get("date","")).strip()
+        est_mod = data_dict.get("est_modification",False)
+        motif = str(data_dict.get("dernier_commit","")).strip()
         # Si c'est une modification et que le dernier commit
         # est vide, on n'envoie pas la notification générale.
-
         if est_mod and not motif:
-
             print(
                 "[NOTIF] Modification ignoree "
                 f"(dernier_commit vide) pour {match_id}"
             )
-
         else:
-
             if type_evt == "ENTRAINEMENT":
-
                 nom_affiche = (
                     titre_evt
                     if titre_evt
                     else "Entraînement"
                 )
-
-                type_libelle = (
-                    "l'entraînement"
-                )
-
+                type_libelle = ("l'entraînement")
             elif type_evt == "MATCH":
-
                 nom_affiche = (
                     adversaire
                     if adversaire
                     else match_id
                 )
-
-                type_libelle = (
-                    f"le match contre {nom_affiche}"
-                )
-
+                type_libelle = (f"le match contre {nom_affiche}")
             else:
-
                 nom_affiche = (
                     titre_evt
                     if titre_evt
                     else match_id
                 )
-
-                type_libelle = (
-                    f"l'événement {nom_affiche}"
-                )
-
+                type_libelle = (f"l'événement {nom_affiche}")
             # ------------------------------------------------------
             # Modification
             # ------------------------------------------------------
-
             if est_mod:
-
-                titre_notif = (
-                    f"FCVV - Modification ({categorie})"
-                )
-
+                titre_notif = (f"FCVV - Modification ({categorie})")
                 corps_notif = (
                     f"Modification concernant "
                     f"{type_libelle} "
                     f"({date_evt})."
                 )
-
                 if motif:
-
-                    corps_notif += (
-                        f"\nMotif : {motif}"
-                    )
-
+                    corps_notif += (f"\nMotif : {motif}")
             # ------------------------------------------------------
             # Nouvelle création
             # ------------------------------------------------------
-
             else:
-
                 if type_evt == "ENTRAINEMENT":
-
                     corps_notif = (
                         f"Nouvel entraînement : "
                         f"{nom_affiche} "
                         f"({date_evt})"
                     ).strip()
-
                     titre_notif = (
                         f"FCVV - Entraînement ({categorie})"
                     )
-
                 elif type_evt == "MATCH":
-
                     corps_notif = (
                         f"Match contre "
                         f"{nom_affiche} "
                         f"({date_evt})"
                     ).strip()
-
                     titre_notif = (
                         f"FCVV - Nouvelle Convocation "
                         f"({categorie})"
                     )
-
                 else:
-
                     corps_notif = (
                         f"Événement : "
                         f"{nom_affiche} "
                         f"({date_evt})"
                     ).strip()
-
                     titre_notif = (
                         f"FCVV - Nouvel Événement "
                         f"({categorie})"
                     )
-
-            background_tasks.add_task(
-                envoyer_notif_push,
-                categorie,
-                titre_notif,
-                corps_notif,
-                notif_type="evenement",
-                match_id=match_id,
-                sender=nom_parent
-            )
-
+            background_tasks.add_task(envoyer_notif_push,categorie,titre_notif,corps_notif,notif_type="evenement",match_id=match_id,sender=nom_parent)
         # ==========================================================
         # ✅ RÉPONSE
         # ==========================================================
-
-        return {
-            "status": "updated",
-            "id": match_id
-        }
-
+        return {"status": "updated","id": match_id}
     except Exception as e:
-
-        print(
-            f"[API] Erreur update_convocations : {e}"
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+        print(f"[API] Erreur update_convocations : {e}")
+        raise HTTPException(status_code=500,detail=str(e))
 
 @app.put("/convocations/batch-update/{categorie}")
 def batch_update_convocations(
@@ -1874,11 +1674,11 @@ def get_one_convocation(
         raise HTTPException(status_code=404, detail="Match non trouvé")
     return doc.to_dict()
 
-
-##########################
+####################################################
+####################################################
 # STATISTIQUES & HISTORIQUE DES PRESENCES
-##########################
-
+####################################################
+####################################################
 class StatsVoteRequest(BaseModel):
     id_sondage: str
     nom_parent: str
@@ -1889,28 +1689,19 @@ class StatsVoteRequest(BaseModel):
     choix_multiple: Optional[str] = None
     nombre_de_places: Optional[int] = None
 
-
 def _stats_id_joueur(nom_joueur: str) -> str:
     """
     Transforme le nom du joueur en identifiant Firestore stable.
     """
-    return (
-        str(nom_joueur)
-        .strip()
-        .replace(" ", "_")
-        .lower()
-    )
-
+    return (str(nom_joueur).strip().replace(" ", "_").lower())
 
 def _stats_normaliser_type(type_evenement: str) -> str:
     """
     Normalise le type d'événement.
     """
     valeur = str(type_evenement or "").strip().upper()
-
     if valeur in ("MATCH", "MATCHES"):
         return "MATCH"
-
     if valeur in (
         "ENTRAINEMENT",
         "ENTRAÎNEMENT",
@@ -1918,148 +1709,70 @@ def _stats_normaliser_type(type_evenement: str) -> str:
         "ENTRAÎNEMENTS",
     ):
         return "ENTRAINEMENT"
-
     return valeur or "EVENEMENT"
-
 
 def _stats_creer_event_uid():
     """
     Génère un identifiant historique indépendant du match_id.
-
     Le match_id peut changer ou être supprimé.
     Le event_uid reste la référence permanente.
     """
     import uuid
-
     return uuid.uuid4().hex
-
 
 def _stats_recuperer_event_uid(categorie: str, match_id: str):
     """
     Récupère l'identifiant historique d'un événement.
-
     Si l'événement n'en possède pas encore, on en crée un.
-
     La route existante /convocations/... n'est pas modifiée.
     On ajoute uniquement notre champ stats_event_uid.
     """
     check_db()
-
-    event_ref = (
-        db.collection(f"convocations_{categorie}")
-        .document(match_id)
-    )
-
+    event_ref = (db.collection(f"convocations_{categorie}").document(match_id))
     snapshot = event_ref.get()
-
-    if not snapshot.exists:
-        raise HTTPException(
-            status_code=404,
-            detail="Événement non trouvé"
-        )
-
+    if not snapshot.exists:raise HTTPException(status_code=404,detail="Événement non trouvé")
     data = snapshot.to_dict() or {}
-
     event_uid = data.get("stats_event_uid")
-
     if event_uid:
         return event_uid, data
-
     event_uid = _stats_creer_event_uid()
-
-    event_ref.update({
-        "stats_event_uid": event_uid
-    })
-
+    event_ref.update({"stats_event_uid": event_uid})
     data["stats_event_uid"] = event_uid
-
     return event_uid, data
-
 
 # ============================================================
 # ARCHIVAGE D'UN EVENEMENT
 # ============================================================
-
 @app.post("/stats/historique/evenement/{categorie}/{match_id}")
-def stats_enregistrer_evenement(
-    categorie: str,
-    match_id: str,
-    nom_parent: Optional[str] = Header(
-        None,
-        alias="nom_parent"
-    ),
-):
+def stats_enregistrer_evenement(categorie: str,match_id: str,nom_parent: Optional[str] = Header(None,alias="nom_parent"),):
     """
     Crée ou synchronise la copie historique d'un événement.
-
     L'événement actuel reste dans convocations_{categorie}.
     L'historique est indépendant et sera conservé après suppression.
     """
-
     check_db()
-
-    if not nom_parent or not verifier_si_admin(
-        nom_parent,
-        categorie
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Accès refusé"
-        )
-
+    if not nom_parent or not verifier_si_admin(nom_parent,categorie):
+        raise HTTPException(status_code=403,detail="Accès refusé")
     try:
-
-        event_uid, evenement = _stats_recuperer_event_uid(
-            categorie,
-            match_id
-        )
-
-        historique_ref = (
-            db.collection("historique_presences")
-            .document(categorie)
-            .collection("evenements")
-            .document(event_uid)
-        )
-
+        event_uid, evenement = _stats_recuperer_event_uid(categorie,match_id)
+        historique_ref = (db.collection("historique_presences").document(categorie).collection("evenements").document(event_uid))
         # --------------------------------------------------------
         # IMPORTANT :
         # On conserve la liste des joueurs convoqués.
         # Ainsi un joueur qui n'a jamais voté sera quand même
         # compté dans le nombre total d'événements.
         # --------------------------------------------------------
-
-        joueurs_convoques = evenement.get(
-            "joueurs_convoques",
-            []
-        )
-
+        joueurs_convoques = evenement.get("joueurs_convoques",[])
         if not isinstance(joueurs_convoques, list):
             joueurs_convoques = []
-
         historique_data = {
             "event_uid": event_uid,
             "match_id": match_id,
             "categorie": categorie,
-
-            "type": _stats_normaliser_type(
-                evenement.get("type", "")
-            ),
-
-            "titre": evenement.get(
-                "titre",
-                ""
-            ),
-
-            "adversaire": evenement.get(
-                "adversaire",
-                ""
-            ),
-
-            "date": evenement.get(
-                "date",
-                ""
-            ),
-
+            "type": _stats_normaliser_type(evenement.get("type", "")),
+            "titre": evenement.get("titre",""),
+            "adversaire": evenement.get("adversaire",""),
+            "date": evenement.get("date",""),
             "heure": (
                 evenement.get("heure")
                 or evenement.get("heure_rdv")
@@ -2067,27 +1780,15 @@ def stats_enregistrer_evenement(
                 or evenement.get("heure_match")
                 or ""
             ),
-
-            "lieu": evenement.get(
-                "lieu",
-                ""
-            ),
-
+            "lieu": evenement.get("lieu",""),
             # Liste figée des joueurs convoqués
             "joueurs_convoques": joueurs_convoques,
-
             "deleted": False,
-
             "updated_at": firestore.SERVER_TIMESTAMP,
         }
-
         # merge=True :
         # les votes déjà enregistrés ne sont jamais supprimés.
-        historique_ref.set(
-            historique_data,
-            merge=True
-        )
-
+        historique_ref.set(historique_data,merge=True)
         print(
             f"[STATS EVENEMENT] "
             f"categorie={categorie} | "
@@ -2095,162 +1796,68 @@ def stats_enregistrer_evenement(
             f"event_uid={event_uid} | "
             f"joueurs={len(joueurs_convoques)}"
         )
-
-        return {
-            "status": "success",
-            "event_uid": event_uid,
-            "match_id": match_id,
-        }
-
+        return {"status": "success","event_uid": event_uid,"match_id": match_id,}
     except HTTPException:
         raise
-
     except Exception as e:
-
-        print(
-            f"[STATS EVENEMENT ERROR] {e}"
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
+        print(f"[STATS EVENEMENT ERROR] {e}")
+        raise HTTPException(status_code=500,detail=str(e))
 
 # ============================================================
 # HISTORIQUE DES VOTES
 # ============================================================
-
 @app.post("/stats/historique/vote/{categorie}")
-def stats_enregistrer_vote(
-    categorie: str,
-    vote: StatsVoteRequest,
-):
+def stats_enregistrer_vote(categorie: str,vote: StatsVoteRequest,):
     """
     Sauvegarde définitivement un vote.
-
     Deux informations sont conservées :
-
     1. votes/{joueur_id}
        -> dernier état du vote
-
     2. votes_history/{action_id}
        -> chaque action de vote, définitivement
-
     Ainsi :
-
         Présent
         Absent
         Présent
-
     reste entièrement conservé dans votes_history.
     """
-
     check_db()
-
-    utilisateur = (
-        vote.nom_parent or ""
-    ).strip()
-
+    utilisateur = (vote.nom_parent or "").strip()
     if not utilisateur:
-        raise HTTPException(
-            status_code=400,
-            detail="Identifiant de l'utilisateur manquant"
-        )
-
-    if not verifier_si_autorise(
-        utilisateur,
-        categorie
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Action interdite : accès non validé"
-        )
-
+        raise HTTPException(status_code=400,detail="Identifiant de l'utilisateur manquant")
+    if not verifier_si_autorise(utilisateur,categorie):
+        raise HTTPException(status_code=403,detail="Action interdite : accès non validé")
     try:
-
         # --------------------------------------------------------
         # 1. Récupération de l'événement actuel
         # --------------------------------------------------------
-
-        event_ref = (
-            db.collection(f"convocations_{categorie}")
-            .document(vote.id_sondage)
-        )
-
+        event_ref = (db.collection(f"convocations_{categorie}").document(vote.id_sondage))
         event_snapshot = event_ref.get()
-
         if not event_snapshot.exists:
-            raise HTTPException(
-                status_code=404,
-                detail="Événement non trouvé"
-            )
-
-        evenement = (
-            event_snapshot.to_dict()
-            or {}
-        )
-
+            raise HTTPException(status_code=404,detail="Événement non trouvé")
+        evenement = (event_snapshot.to_dict() or {})
         # --------------------------------------------------------
         # 2. Event UID
         # --------------------------------------------------------
-
-        event_uid = evenement.get(
-            "stats_event_uid"
-        )
-
+        event_uid = evenement.get("stats_event_uid")
         if not event_uid:
-
             event_uid = _stats_creer_event_uid()
-
             event_ref.update({
                 "stats_event_uid": event_uid
             })
-
         # --------------------------------------------------------
         # 3. Détermination du joueur
         # --------------------------------------------------------
-
-        joueur = (
-            vote.nom_joueur_concerne
-            or ""
-        ).strip()
-
+        joueur = (vote.nom_joueur_concerne or "").strip()
         if not joueur:
-
-            id_utilisateur = (
-                utilisateur
-                .replace(" ", "_")
-                .lower()
-            )
-
-            user_ref = (
-                db.collection("users")
-                .document(id_utilisateur)
-            )
-
+            id_utilisateur = (utilisateur.replace(" ", "_").lower())
+            user_ref = (db.collection("users").document(id_utilisateur))
             user_snapshot = user_ref.get()
-
             joueurs_lies = []
-
             if user_snapshot.exists:
-
-                user_data = (
-                    user_snapshot.to_dict()
-                    or {}
-                )
-
-                joueurs_par_cat = (
-                    user_data.get(
-                        "joueurs_par_categorie",
-                        {}
-                    )
-                )
-
-                if isinstance(
-                    joueurs_par_cat,
-                    dict
-                ):
+                user_data = (user_snapshot.to_dict() or {})
+                joueurs_par_cat = (user_data.get("joueurs_par_categorie",{}))
+                if isinstance(joueurs_par_cat,dict):
                     joueurs_lies = (
                         joueurs_par_cat.get(
                             categorie,
@@ -2263,73 +1870,28 @@ def stats_enregistrer_vote(
                 if joueurs_lies
                 else utilisateur
             )
-
-        joueur_id = _stats_id_joueur(
-            joueur
-        )
-
-        is_coach = (
-            str(joueur)
-            .upper()
-            .startswith("COACH_")
-        )
-
+        joueur_id = _stats_id_joueur(joueur)
+        is_coach = (str(joueur).upper().startswith("COACH_"))
         # --------------------------------------------------------
         # 4. Référence historique
         # --------------------------------------------------------
-
-        historique_event_ref = (
-            db.collection("historique_presences")
-            .document(categorie)
-            .collection("evenements")
-            .document(event_uid)
-        )
-
+        historique_event_ref = (db.collection("historique_presences").document(categorie).collection("evenements").document(event_uid))
         # --------------------------------------------------------
         # 5. Synchronisation des informations de l'événement
         # --------------------------------------------------------
-
-        joueurs_convoques = evenement.get(
-            "joueurs_convoques",
-            []
-        )
-
-        if not isinstance(
-            joueurs_convoques,
-            list
-        ):
+        joueurs_convoques = evenement.get("joueurs_convoques",[])
+        if not isinstance(joueurs_convoques,list):
             joueurs_convoques = []
 
         historique_event_ref.set(
             {
                 "event_uid": event_uid,
-
                 "match_id": vote.id_sondage,
-
                 "categorie": categorie,
-
-                "type": _stats_normaliser_type(
-                    evenement.get(
-                        "type",
-                        ""
-                    )
-                ),
-
-                "titre": evenement.get(
-                    "titre",
-                    ""
-                ),
-
-                "adversaire": evenement.get(
-                    "adversaire",
-                    ""
-                ),
-
-                "date": evenement.get(
-                    "date",
-                    ""
-                ),
-
+                "type": _stats_normaliser_type(evenement.get("type","")),
+                "titre": evenement.get("titre",""),
+                "adversaire": evenement.get("adversaire",""),
+                "date": evenement.get("date",""),
                 "heure": (
                     evenement.get("heure")
                     or evenement.get("heure_rdv")
@@ -2337,90 +1899,54 @@ def stats_enregistrer_vote(
                     or evenement.get("heure_match")
                     or ""
                 ),
-
-                "lieu": evenement.get(
-                    "lieu",
-                    ""
-                ),
-
+                "lieu": evenement.get("lieu",""),
                 # Très important pour les statistiques
                 "joueurs_convoques": joueurs_convoques,
-
                 "deleted": False,
-
                 "updated_at":
                     firestore.SERVER_TIMESTAMP,
             },
             merge=True
         )
-
         # --------------------------------------------------------
         # 6. Données du vote
         # --------------------------------------------------------
-
         vote_data = {
             "joueur": joueur,
             "joueur_id": joueur_id,
             "parent": utilisateur,
             "est_coach": is_coach,
-
             "choix": vote.choix,
             "disponibilite": vote.choix,
-
             "choix_trajet": vote.choix_trajet,
-
             "second_vote": vote.second_vote,
-
             "choix_multiple":
                 vote.choix_multiple,
-
             "nombre_de_places":
                 vote.nombre_de_places,
-
             "match_id":
                 vote.id_sondage,
-
             "timestamp":
                 firestore.SERVER_TIMESTAMP,
         }
-
         # --------------------------------------------------------
         # 7. Dernier état du vote
         # --------------------------------------------------------
-
-        dernier_vote_ref = (
-            historique_event_ref
-            .collection("votes")
-            .document(joueur_id)
-        )
-
-        dernier_vote_ref.set(
-            vote_data,
-            merge=True
-        )
-
+        dernier_vote_ref = (historique_event_ref.collection("votes").document(joueur_id))
+        dernier_vote_ref.set(vote_data,merge=True)
         # --------------------------------------------------------
         # 8. Historique IMMUTABLE
         # --------------------------------------------------------
-
-        historique_vote_ref = (
-            historique_event_ref
-            .collection("votes_history")
-            .document()
-        )
-
+        historique_vote_ref = (historique_event_ref.collection("votes_history").document())
         historique_vote_ref.set(
             {
                 **vote_data,
-
                 "action_id":
                     historique_vote_ref.id,
-
                 "timestamp":
                     firestore.SERVER_TIMESTAMP,
             }
         )
-
         print(
             f"[STATS VOTE] "
             f"categorie={categorie} | "
@@ -2429,7 +1955,6 @@ def stats_enregistrer_vote(
             f"joueur={joueur} | "
             f"choix={vote.choix}"
         )
-
         return {
             "status": "success",
             "event_uid": event_uid,
@@ -2437,50 +1962,24 @@ def stats_enregistrer_vote(
             "message":
                 "Vote sauvegardé dans l'historique",
         }
-
     except HTTPException:
         raise
-
     except Exception as e:
-
-        print(
-            f"[STATS VOTE ERROR] {e}"
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+        print(f"[STATS VOTE ERROR] {e}")
+        raise HTTPException(status_code=500,detail=str(e))
 
 @app.post("/stats/historique/evenement/{categorie}/{match_id}")
-def stats_creer_evenement(
-    categorie: str,
-    match_id: str,
-):
+def stats_creer_evenement(categorie: str,match_id: str,):
     check_db()
-
-    event_ref = (
-        db.collection(f"convocations_{categorie}")
-        .document(match_id)
-    )
-
+    event_ref = (db.collection(f"convocations_{categorie}").document(match_id))
     event_snapshot = event_ref.get()
-
     if not event_snapshot.exists:
-        raise HTTPException(
-            status_code=404,
-            detail="Événement non trouvé"
-        )
-
+        raise HTTPException(status_code=404,detail="Événement non trouvé")
     evenement = event_snapshot.to_dict() or {}
-
     # ---------------------------------------------------------
     # UNIQUEMENT MATCH et ENTRAINEMENT pour les statistiques
     # ---------------------------------------------------------
-    type_evenement = _stats_normaliser_type(
-        evenement.get("type", "")
-    )
-
+    type_evenement = _stats_normaliser_type(evenement.get("type", ""))
     if type_evenement not in ("MATCH", "ENTRAINEMENT"):
         return {
             "status": "ignored",
@@ -2491,40 +1990,23 @@ def stats_creer_evenement(
                 "dans les statistiques."
             ),
         }
-
     # ---------------------------------------------------------
     # Récupération ou création de l'identifiant statistique
     # ---------------------------------------------------------
     event_uid = evenement.get("stats_event_uid")
-
     if not event_uid:
         event_uid = _stats_creer_event_uid()
-
-        event_ref.update({
-            "stats_event_uid": event_uid
-        })
-
+        event_ref.update({"stats_event_uid": event_uid})
     # ---------------------------------------------------------
     # Joueurs convoqués
     # ---------------------------------------------------------
-    joueurs_convoques = evenement.get(
-        "joueurs_convoques",
-        []
-    )
-
+    joueurs_convoques = evenement.get("joueurs_convoques",[])
     if not isinstance(joueurs_convoques, list):
         joueurs_convoques = []
-
     # ---------------------------------------------------------
     # Référence de l'événement dans l'historique des stats
     # ---------------------------------------------------------
-    historique_event_ref = (
-        db.collection("historique_presences")
-        .document(categorie)
-        .collection("evenements")
-        .document(event_uid)
-    )
-
+    historique_event_ref = (db.collection("historique_presences").document(categorie).collection("evenements").document(event_uid))
     # ---------------------------------------------------------
     # Création / mise à jour de l'événement statistique
     # ---------------------------------------------------------
@@ -2534,22 +2016,9 @@ def stats_creer_evenement(
             "match_id": match_id,
             "categorie": categorie,
             "type": type_evenement,
-
-            "titre": evenement.get(
-                "titre",
-                ""
-            ),
-
-            "adversaire": evenement.get(
-                "adversaire",
-                ""
-            ),
-
-            "date": evenement.get(
-                "date",
-                ""
-            ),
-
+            "titre": evenement.get("titre",""),
+            "adversaire": evenement.get("adversaire",""),
+            "date": evenement.get("date",""),
             "heure": (
                 evenement.get("heure")
                 or evenement.get("heure_rdv")
@@ -2557,21 +2026,13 @@ def stats_creer_evenement(
                 or evenement.get("heure_match")
                 or ""
             ),
-
-            "lieu": evenement.get(
-                "lieu",
-                ""
-            ),
-
+            "lieu": evenement.get("lieu",""),
             "joueurs_convoques": joueurs_convoques,
-
             "deleted": False,
-
             "updated_at": firestore.SERVER_TIMESTAMP,
         },
         merge=True
     )
-
     return {
         "status": "success",
         "event_uid": event_uid,
@@ -2582,222 +2043,131 @@ def stats_creer_evenement(
             "dans les statistiques."
         ),
     }
-
-
 # ============================================================
 # SUPPRESSION HISTORIQUE
 # ============================================================
-
 @app.delete("/stats/historique/evenement/{categorie}/{match_id}")
-def stats_marquer_evenement_supprime(
-    categorie: str,
-    match_id: str,
-    nom_parent: Optional[str] = Header(
-        None,
-        alias="nom_parent"
-    ),
-):
+def stats_marquer_evenement_supprime(categorie: str,match_id: str,nom_parent: Optional[str] = Header(None,alias="nom_parent"),):
     """
     Marque l'événement comme supprimé.
-
     IMPORTANT :
     aucune donnée historique n'est supprimée.
     """
-
     check_db()
-
-    if not nom_parent or not verifier_si_admin(
-        nom_parent,
-        categorie
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Accès refusé"
-        )
-
+    if not nom_parent or not verifier_si_admin(nom_parent,categorie):
+        raise HTTPException(status_code=403,detail="Accès refusé")
     try:
-
         # --------------------------------------------------------
         # 1. Recherche de l'événement actuel
         # --------------------------------------------------------
-
-        event_ref = (
-            db.collection(
-                f"convocations_{categorie}"
-            )
-            .document(match_id)
-        )
-
+        event_ref = (db.collection(f"convocations_{categorie}").document(match_id))
         snapshot = event_ref.get()
-
         if snapshot.exists:
-
-            data = (
-                snapshot.to_dict()
-                or {}
-            )
-
-            event_uid = data.get(
-                "stats_event_uid"
-            )
-
+            data = (snapshot.to_dict() or {})
+            event_uid = data.get("stats_event_uid")
             if event_uid:
-
-                historique_ref = (
-                    db.collection(
-                        "historique_presences"
-                    )
-                    .document(categorie)
-                    .collection("evenements")
-                    .document(event_uid)
-                )
-
+                historique_ref = (db.collection("historique_presences").document(categorie).collection("evenements").document(event_uid))
                 historique_ref.set(
                     {
                         "deleted": True,
-
                         "deleted_at":
                             firestore.SERVER_TIMESTAMP,
-
                         "match_id":
                             match_id,
                     },
                     merge=True
                 )
-
-                return {
-                    "status": "success",
-                    "event_uid": event_uid,
-                    "deleted": True,
-                }
-
+                return {"status": "success","event_uid": event_uid,"deleted": True,}
         # --------------------------------------------------------
         # 2. Cas où l'événement est déjà supprimé
         # --------------------------------------------------------
-
-        historique_events = (
-            db.collection(
-                "historique_presences"
-            )
-            .document(categorie)
-            .collection("evenements")
-            .where(
-                "match_id",
-                "==",
-                match_id
-            )
-            .stream()
-        )
-
+        historique_events = (db.collection("historique_presences").document(categorie).collection("evenements").where("match_id","==",match_id).stream())
         nombre = 0
-
         for doc in historique_events:
-
-            doc.reference.set(
-                {
-                    "deleted": True,
-
-                    "deleted_at":
-                        firestore.SERVER_TIMESTAMP,
-                },
-                merge=True
-            )
-
+            doc.reference.set({"deleted": True,"deleted_at":firestore.SERVER_TIMESTAMP,},merge=True)
             nombre += 1
-
-        return {
-            "status": "success",
-            "deleted": True,
-            "historique_trouve": nombre,
-        }
-
+        return {"status": "success","deleted": True,"historique_trouve": nombre,}
     except Exception as e:
-
-        print(
-            f"[STATS DELETE ERROR] {e}"
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
-
+        print(f"[STATS DELETE ERROR] {e}")
+        raise HTTPException(status_code=500,detail=str(e))
 # ============================================================
 # STATISTIQUES
 # ============================================================
-
-@app.get("/stats/{categorie}")
-def recuperer_stats(
+# ------------------------------------------------------------
+# MODÈLE POUR LA MISE À JOUR DES PERFORMANCES
+# ------------------------------------------------------------
+class UpdatePerformanceRequest(BaseModel):
+    joueur_id: str
+    buts: int = 0
+    passes_decisives: int = 0
+    titularisations: int = 0
+    minutes_jouees: int = 0
+    cartons_jaunes: int = 0
+    cartons_rouges: int = 0
+# ============================================================
+# ENREGISTRER / MODIFIER LES PERFORMANCES D'UN JOUEUR
+# ============================================================
+@app.post("/stats/performance/{categorie}")
+def sauvegarder_performance_joueur(
     categorie: str,
-    nom_parent: Optional[str] = Header(
-        None,
-        alias="nom_parent"
-    ),
+    data: UpdatePerformanceRequest,
+    nom_parent: Optional[str] = Header(None, alias="nom_parent"),
 ):
     """
+    Enregistre ou met à jour les statistiques individuelles d'un joueur dans Firestore.
+    Réservé aux ADMINS.
+    """
+    check_db()
+    if not nom_parent or not verifier_si_admin(nom_parent, categorie):
+        raise HTTPException(status_code=403, detail="Accès refusé : réservé aux administrateurs")
+    try:
+        perf_ref = (
+            db.collection("historique_presences")
+            .document(categorie)
+            .collection("performances")
+            .document(data.joueur_id)
+        )
+        perf_data = {
+            "joueur_id": data.joueur_id,
+            "buts": max(0, data.buts),
+            "passes_decisives": max(0, data.passes_decisives),
+            "titularisations": max(0, data.titularisations),
+            "minutes_jouees": max(0, data.minutes_jouees),
+            "cartons_jaunes": max(0, data.cartons_jaunes),
+            "cartons_rouges": max(0, data.cartons_rouges),
+            "updated_at": firestore.SERVER_TIMESTAMP,
+            "updated_by": nom_parent,
+        }
+        perf_ref.set(perf_data, merge=True)
+        return {"status": "success", "message": "Performances mises à jour avec succès", "joueur_id": data.joueur_id}
+    except Exception as e:
+        print(f"[STATS PERF ERROR] {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/stats/{categorie}")
+def recuperer_stats(categorie: str,nom_parent: Optional[str] = Header(None,alias="nom_parent"),):
+    """
     Retourne les statistiques de présence.
-
     Seuls les ADMIN peuvent accéder aux statistiques.
-
     Le total est calculé à partir des joueurs convoqués,
     et non uniquement à partir des joueurs ayant voté.
     """
-
     check_db()
-
     # --------------------------------------------------------
     # 1. Vérification ADMIN stricte
     # --------------------------------------------------------
-
     if not nom_parent:
-
-        raise HTTPException(
-            status_code=403,
-            detail="Accès refusé"
-        )
-
-    id_utilisateur = (
-        nom_parent
-        .strip()
-        .replace(" ", "_")
-        .lower()
-    )
-
-    user_ref = (
-        db.collection("users")
-        .document(id_utilisateur)
-    )
-
+        raise HTTPException(status_code=403,detail="Accès refusé")
+    id_utilisateur = (nom_parent.strip().replace(" ", "_").lower())
+    user_ref = (db.collection("users").document(id_utilisateur))
     user_snapshot = user_ref.get()
-
     if not user_snapshot.exists:
-
-        raise HTTPException(
-            status_code=403,
-            detail="Utilisateur inconnu"
-        )
-
-    user_data = (
-        user_snapshot.to_dict()
-        or {}
-    )
-
-    roles = user_data.get(
-        "roles_par_categorie",
-        {}
-    )
-
-    role = str(
-        roles.get(
-            categorie,
-            "EXCLU"
-        )
-    ).strip().upper()
-
+        raise HTTPException(status_code=403,detail="Utilisateur inconnu")
+    user_data = (user_snapshot.to_dict() or {})
+    roles = user_data.get("roles_par_categorie",{})
+    role = str(roles.get(categorie,"EXCLU")).strip().upper()
     # ADMIN UNIQUEMENT
     if role != "ADMIN":
-
         raise HTTPException(
             status_code=403,
             detail=(
@@ -2805,391 +2175,168 @@ def recuperer_stats(
                 "aux administrateurs"
             )
         )
-
     # --------------------------------------------------------
     # 2. Récupération des événements historiques
     # --------------------------------------------------------
-
-    events_ref = (
-        db.collection(
-            "historique_presences"
-        )
-        .document(categorie)
-        .collection("evenements")
-    )
-
+    events_ref = (db.collection("historique_presences").document(categorie).collection("evenements"))
     events_docs = events_ref.stream()
-
     evenements = []
-
     for doc in events_docs:
-
-        data = (
-            doc.to_dict()
-            or {}
-        )
-
+        data = (doc.to_dict() or {})
         data["event_uid"] = doc.id
-
         evenements.append(data)
-
     # --------------------------------------------------------
-    # 3. Récupération de TOUS les joueurs de la catégorie
+    # 3. Récupération des statistiques de performance existantes
     # --------------------------------------------------------
-
-    joueurs = {}
-
-    users_docs = (
-        db.collection("users")
+    perfs_docs = (
+        db.collection("historique_presences")
+        .document(categorie)
+        .collection("performances")
         .stream()
     )
+    perfs_dict = {doc.id: doc.to_dict() for doc in perfs_docs}
 
+    joueurs = {}
+    users_docs = (db.collection("users").stream())
     for user_doc in users_docs:
-
-        user = (
-            user_doc.to_dict()
-            or {}
-        )
-
-        roles_user = user.get(
-            "roles_par_categorie",
-            {}
-        )
-
+        user = (user_doc.to_dict() or {})
+        roles_user = user.get("roles_par_categorie",{})
         if categorie not in roles_user:
             continue
-
-        joueurs_user = user.get(
-            "joueurs_par_categorie",
-            {}
-        )
-
-        if not isinstance(
-            joueurs_user,
-            dict
-        ):
+        joueurs_user = user.get("joueurs_par_categorie",{})
+        if not isinstance(joueurs_user,dict):
             continue
-
-        liste = joueurs_user.get(
-            categorie,
-            []
-        )
-
-        if not isinstance(
-            liste,
-            list
-        ):
+        liste = joueurs_user.get(categorie,[])
+        if not isinstance(liste,list):
             continue
-
         for joueur in liste:
-
-            joueur = str(
-                joueur
-            ).strip()
-
+            joueur = str(joueur).strip()
             if not joueur:
                 continue
-
-            joueur_id = _stats_id_joueur(
-                joueur
-            )
+            joueur_id = _stats_id_joueur(joueur)
+            
+            # Récupération des performances stockées (si existantes)
+            p_data = perfs_dict.get(joueur_id, {})
 
             joueurs[joueur_id] = {
                 "id": joueur_id,
                 "nom": joueur,
-
+                "equipe": categorie,
                 "entrainements": 0,
                 "entrainements_total": 0,
-
                 "matchs": 0,
                 "matchs_total": 0,
-
                 "total_present": 0,
                 "total_evenements": 0,
-
                 "pourcentage_presence": 0,
+                # --- Clés de performance sportive ---
+                "buts": p_data.get("buts", 0),
+                "passes_decisives": p_data.get("passes_decisives", 0),
+                "titularisations": p_data.get("titularisations", 0),
+                "minutes_jouees": p_data.get("minutes_jouees", 0),
+                "cartons_jaunes": p_data.get("cartons_jaunes", 0),
+                "cartons_rouges": p_data.get("cartons_rouges", 0),
             }
-
     # --------------------------------------------------------
     # 4. Calcul des statistiques
     # --------------------------------------------------------
-
     for evenement in evenements:
-
-        event_uid = evenement.get(
-            "event_uid"
-        )
-
-        type_evt = (
-            _stats_normaliser_type(
-                evenement.get(
-                    "type",
-                    ""
-                )
-            )
-        )
-
+        event_uid = evenement.get("event_uid")
+        type_evt = (_stats_normaliser_type(evenement.get("type","")))
         # ----------------------------------------------------
         # Joueurs réellement convoqués
         # ----------------------------------------------------
-
-        joueurs_convoques = evenement.get(
-            "joueurs_convoques",
-            []
-        )
-
-        if not isinstance(
-            joueurs_convoques,
-            list
-        ):
+        joueurs_convoques = evenement.get("joueurs_convoques",[])
+        if not isinstance(joueurs_convoques,list):
             joueurs_convoques = []
-
         # Ensemble des joueurs convoqués
         joueurs_convoques_ids = set()
-
         for joueur_conv in joueurs_convoques:
-
             # Format possible :
             # {"nom": "...", "prenom": "..."}
-            if isinstance(
-                joueur_conv,
-                dict
-            ):
-
-                nom = str(
-                    joueur_conv.get(
-                        "nom",
-                        ""
-                    )
-                ).strip()
-
-                prenom = str(
-                    joueur_conv.get(
-                        "prenom",
-                        ""
-                    )
-                ).strip()
-
-                nom_complet = (
-                    f"{nom} {prenom}"
-                ).strip()
-
+            if isinstance(joueur_conv,dict):
+                nom = str(joueur_conv.get("nom","")).strip()
+                prenom = str(joueur_conv.get("prenom","")).strip()
+                nom_complet = (f"{nom} {prenom}").strip()
             else:
-
-                nom_complet = str(
-                    joueur_conv
-                ).strip()
-
+                nom_complet = str(joueur_conv).strip()
             if not nom_complet:
                 continue
-
-            joueur_id = _stats_id_joueur(
-                nom_complet
-            )
-
-            joueurs_convoques_ids.add(
-                joueur_id
-            )
-
+            joueur_id = _stats_id_joueur(nom_complet)
+            joueurs_convoques_ids.add(joueur_id)
             # Si le joueur n'existe plus dans
             # users, on peut quand même conserver
             # son historique.
             if joueur_id not in joueurs:
-
                 joueurs[joueur_id] = {
                     "id": joueur_id,
                     "nom": nom_complet,
-
                     "entrainements": 0,
                     "entrainements_total": 0,
-
                     "matchs": 0,
                     "matchs_total": 0,
-
                     "total_present": 0,
                     "total_evenements": 0,
-
                     "pourcentage_presence": 0,
                 }
-
         # ----------------------------------------------------
         # Votes actuels
         # ----------------------------------------------------
-
-        votes_ref = (
-            events_ref
-            .document(event_uid)
-            .collection("votes")
-        )
-
+        votes_ref = (events_ref.document(event_uid).collection("votes"))
         votes_docs = votes_ref.stream()
-
         votes_par_joueur = {}
-
         for vote_doc in votes_docs:
-
-            vote_data = (
-                vote_doc.to_dict()
-                or {}
-            )
-
+            vote_data = (vote_doc.to_dict() or {})
             joueur_id = vote_doc.id
-
             # Les coachs ne sont pas comptés
-            if vote_data.get(
-                "est_coach",
-                False
-            ):
+            if vote_data.get("est_coach",False):
                 continue
-
-            votes_par_joueur[joueur_id] = (
-                vote_data
-            )
-
+            votes_par_joueur[joueur_id] = (vote_data)
         # ----------------------------------------------------
         # TOTAL : basé sur les joueurs convoqués
         # ----------------------------------------------------
-
         for joueur_id in joueurs_convoques_ids:
-
-            joueur_data = joueurs.get(
-                joueur_id
-            )
-
+            joueur_data = joueurs.get(joueur_id)
             if not joueur_data:
                 continue
-
             if type_evt == "ENTRAINEMENT":
-
-                joueur_data[
-                    "entrainements_total"
-                ] += 1
-
+                joueur_data["entrainements_total"] += 1
             elif type_evt == "MATCH":
-
-                joueur_data[
-                    "matchs_total"
-                ] += 1
-
+                joueur_data["matchs_total"] += 1
         # ----------------------------------------------------
         # PRESENCES : basées sur le dernier vote
         # ----------------------------------------------------
-
-        for joueur_id, vote_data in (
-            votes_par_joueur.items()
-        ):
-
+        for joueur_id, vote_data in (votes_par_joueur.items()):
             if joueur_id not in joueurs:
                 continue
-
-            choix = str(
-                vote_data.get(
-                    "disponibilite",
-                    vote_data.get(
-                        "choix",
-                        ""
-                    )
-                )
-                or ""
-            ).strip().upper()
-
-            est_present = choix in (
-                "PRESENT",
-                "PRÉSENT",
-                "PRESENT(E)",
-                "PRÉSENT(E)",
-                "OUI",
-                "DISPONIBLE",
-                "PARTICIPE",
-                "PARTICIPERA",
-            )
-
+            choix = str(vote_data.get("disponibilite",vote_data.get("choix","")) or "").strip().upper()
+            est_present = choix in ("PRESENT","PRÉSENT","PRESENT(E)","PRÉSENT(E)","OUI","DISPONIBLE","PARTICIPE","PARTICIPERA",)
             if not est_present:
                 continue
-
-            joueurs[joueur_id][
-                "total_present"
-            ] += 1
-
+            joueurs[joueur_id]["total_present"] += 1
             if type_evt == "ENTRAINEMENT":
-
-                joueurs[joueur_id][
-                    "entrainements"
-                ] += 1
-
+                joueurs[joueur_id]["entrainements"] += 1
             elif type_evt == "MATCH":
-
-                joueurs[joueur_id][
-                    "matchs"
-                ] += 1
-
+                joueurs[joueur_id]["matchs"] += 1
     # --------------------------------------------------------
     # 5. Pourcentages
     # --------------------------------------------------------
-
     resultats = []
-
     for joueur in joueurs.values():
-
-        total = (
-            joueur[
-                "entrainements_total"
-            ]
-            +
-            joueur[
-                "matchs_total"
-            ]
-        )
-
-        joueur[
-            "total_evenements"
-        ] = total
-
+        total = (joueur["entrainements_total"]+joueur["matchs_total"])
+        joueur["total_evenements"] = total
         if total > 0:
-
-            joueur[
-                "pourcentage_presence"
-            ] = round(
-                (
-                    joueur[
-                        "total_present"
-                    ]
-                    / total
-                ) * 100,
-                1
-            )
-
+            joueur["pourcentage_presence"] = round((joueur["total_present"]/ total) * 100,1)
         else:
-
-            joueur[
-                "pourcentage_presence"
-            ] = 0
-
-        resultats.append(
-            joueur
-        )
-
-    resultats.sort(
-        key=lambda x:
-            str(
-                x.get(
-                    "nom",
-                    ""
-                )
-            ).lower()
-    )
-
+            joueur["pourcentage_presence"] = 0
+        resultats.append(joueur)
+    resultats.sort(key=lambda x:str(x.get("nom","")).lower())
     # --------------------------------------------------------
     # 6. Réponse
     # --------------------------------------------------------
-
     return {
         "categorie": categorie,
-
-        "nombre_evenements": len(
-            evenements
-        ),
-
+        "nombre_evenements": len(evenements),
         "nombre_matchs": sum(
             1
             for e in evenements
@@ -3200,7 +2347,6 @@ def recuperer_stats(
                 )
             ) == "MATCH"
         ),
-
         "nombre_entrainements": sum(
             1
             for e in evenements
@@ -3211,216 +2357,8 @@ def recuperer_stats(
                 )
             ) == "ENTRAINEMENT"
         ),
-
         "joueurs": resultats,
     }
-
-# ============================================================
-# FCM - NOTIFICATION CIBLEE CONVOCATION MATCH
-# ============================================================
-#
-# Cette fonction est volontairement indépendante de
-# envoyer_notif_push_token().
-#
-# Elle reprend le même mécanisme FCM :
-#   - Android HIGH priority
-#   - APNS
-#   - notification title/body
-#   - data payload
-#   - envoi sur un token précis
-#
-# Elle ajoute simplement match_id dans le payload data.
-#
-# ============================================================
-
-def envoyer_notif_convocation_token(
-    fcm_token: str,
-    titre: str,
-    corps: str,
-    categorie: str,
-    match_id: str,
-):
-    """
-    Envoie une notification FCM de convocation sur un token précis.
-
-    Fonction indépendante de envoyer_notif_push_token().
-    Ne modifie aucune fonction existante.
-    """
-
-    if not fcm_token:
-        print(
-            "[FCM CONVOCATION] Aucun token FCM fourni."
-        )
-        return False
-
-    try:
-
-        # ----------------------------------------------------
-        # Payload data
-        # ----------------------------------------------------
-
-        data_payload = {
-            "title": titre,
-            "body": corps,
-            "categorie": categorie,
-            "notif_type": "convocation",
-            "open_page": "vestiaire",
-            "match_id": str(match_id),
-        }
-
-        # ----------------------------------------------------
-        # Configuration Android
-        # ----------------------------------------------------
-
-        android_config = messaging.AndroidConfig(
-            priority="high",
-            notification=messaging.AndroidNotification(
-                icon="ic_notification",
-                channel_id="fcvv_high_priority_v2",
-            )
-        )
-
-        # ----------------------------------------------------
-        # Configuration APNS (iOS)
-        # ----------------------------------------------------
-
-        apns_config = messaging.APNSConfig(
-            headers={
-                "apns-priority": "10",
-            },
-            payload=messaging.APNSPayload(
-                aps=messaging.Aps(
-                    sound="default",
-                )
-            ),
-        )
-
-        # ----------------------------------------------------
-        # Message FCM
-        # ----------------------------------------------------
-
-        message = messaging.Message(
-
-            notification=messaging.Notification(
-                title=titre,
-                body=corps,
-            ),
-
-            data=data_payload,
-
-            android=android_config,
-
-            apns=apns_config,
-
-            token=fcm_token,
-        )
-
-        # ----------------------------------------------------
-        # Envoi
-        # ----------------------------------------------------
-
-        response = messaging.send(message)
-
-        print(
-            f"[FCM CONVOCATION] Notification envoyée "
-            f"sur le token {fcm_token[:20]}... "
-            f"(match_id={match_id}) : {response}"
-        )
-
-        return True
-
-    except Exception as e:
-
-        print(
-            f"[FCM CONVOCATION] Erreur envoi notification : "
-            f"{e}"
-        )
-
-        return False
-
-def recuperer_tokens_fcm_pour_joueur(
-    joueur_nom: str,
-    categorie: str
-) -> list[str]:
-    """
-    Recherche dans users les parents associés à un joueur
-    pour une catégorie donnée et retourne leurs tokens FCM.
-    """
-
-    check_db()
-
-    joueur_recherche = str(joueur_nom or "").strip()
-
-    if not joueur_recherche:
-        return []
-
-    tokens_trouves = []
-
-    try:
-        docs = db.collection("users").stream()
-
-        for doc in docs:
-
-            data = doc.to_dict()
-
-            joueurs_par_categorie = data.get(
-                "joueurs_par_categorie",
-                {}
-            )
-
-            if not isinstance(joueurs_par_categorie, dict):
-                continue
-
-            joueurs = joueurs_par_categorie.get(
-                categorie,
-                []
-            )
-
-            if not isinstance(joueurs, list):
-                continue
-
-            joueurs_normalises = [
-                str(j).strip().casefold()
-                for j in joueurs
-                if str(j).strip()
-            ]
-
-            if joueur_recherche.casefold() not in joueurs_normalises:
-                continue
-
-            fcm_tokens = data.get(
-                "fcm_tokens",
-                []
-            )
-
-            if not isinstance(fcm_tokens, list):
-                continue
-
-            for token in fcm_tokens:
-
-                token = str(token).strip()
-
-                if token and token not in tokens_trouves:
-                    tokens_trouves.append(token)
-
-        print(
-            f"[FCM CONVOCATION] "
-            f"joueur={joueur_recherche} | "
-            f"categorie={categorie} | "
-            f"tokens={len(tokens_trouves)}"
-        )
-
-        return tokens_trouves
-
-    except Exception as e:
-
-        print(
-            f"[FCM CONVOCATION] "
-            f"Erreur recherche joueur={joueur_recherche} : {e}"
-        )
-
-        return []
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
