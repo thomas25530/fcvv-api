@@ -2186,7 +2186,7 @@ def recuperer_stats(categorie: str,nom_parent: Optional[str] = Header(None,alias
         data["event_uid"] = doc.id
         evenements.append(data)
     # --------------------------------------------------------
-    # 3. Récupération des statistiques de performance existantes
+    # 3. Récupération des statistiques de performance
     # --------------------------------------------------------
     perfs_docs = (
         db.collection("historique_presences")
@@ -2194,9 +2194,38 @@ def recuperer_stats(categorie: str,nom_parent: Optional[str] = Header(None,alias
         .collection("performances")
         .stream()
     )
-    perfs_dict = {doc.id: doc.to_dict() for doc in perfs_docs}
-
+    
     joueurs = {}
+
+    # A. D'ABORD : On intègre TOUS les joueurs qui ont des performances enregistrées
+    for doc in perfs_docs:
+        p_data = doc.to_dict() or {}
+        joueur_id = doc.id  # ex: "guillemin_adam"
+        
+        # On reconstitue un nom propre à partir de l'ID si le nom n'est pas stocké explicitement
+        nom_lisible = p_data.get("nom") or joueur_id.replace("_", " ").title()
+
+        joueurs[joueur_id] = {
+            "id": joueur_id,
+            "nom": nom_lisible,
+            "equipe": categorie,
+            "entrainements": 0,
+            "entrainements_total": 0,
+            "matchs": 0,
+            "matchs_total": 0,
+            "total_present": 0,
+            "total_evenements": 0,
+            "pourcentage_presence": 0,
+            # Performances sportives
+            "buts": p_data.get("buts", 0),
+            "passes_decisives": p_data.get("passes_decisives", 0),
+            "titularisations": p_data.get("titularisations", 0),
+            "minutes_jouees": p_data.get("minutes_jouees", 0),
+            "cartons_jaunes": p_data.get("cartons_jaunes", 0),
+            "cartons_rouges": p_data.get("cartons_rouges", 0),
+        }
+
+    # B. ENSUITE : On parcourt les users pour ajouter ceux qui ont des présences mais pas encore de performances
     users_docs = (db.collection("users").stream())
     for user_doc in users_docs:
         user = (user_doc.to_dict() or {})
@@ -2215,28 +2244,26 @@ def recuperer_stats(categorie: str,nom_parent: Optional[str] = Header(None,alias
                 continue
             joueur_id = _stats_id_joueur(joueur)
             
-            # Récupération des performances stockées (si existantes)
-            p_data = perfs_dict.get(joueur_id, {})
-
-            joueurs[joueur_id] = {
-                "id": joueur_id,
-                "nom": joueur,
-                "equipe": categorie,
-                "entrainements": 0,
-                "entrainements_total": 0,
-                "matchs": 0,
-                "matchs_total": 0,
-                "total_present": 0,
-                "total_evenements": 0,
-                "pourcentage_presence": 0,
-                # --- Clés de performance sportive ---
-                "buts": p_data.get("buts", 0),
-                "passes_decisives": p_data.get("passes_decisives", 0),
-                "titularisations": p_data.get("titularisations", 0),
-                "minutes_jouees": p_data.get("minutes_jouees", 0),
-                "cartons_jaunes": p_data.get("cartons_jaunes", 0),
-                "cartons_rouges": p_data.get("cartons_rouges", 0),
-            }
+            # Si le joueur n'existe pas encore dans notre dictionnaire, on l'ajoute
+            if joueur_id not in joueurs:
+                joueurs[joueur_id] = {
+                    "id": joueur_id,
+                    "nom": joueur,
+                    "equipe": categorie,
+                    "entrainements": 0,
+                    "entrainements_total": 0,
+                    "matchs": 0,
+                    "matchs_total": 0,
+                    "total_present": 0,
+                    "total_evenements": 0,
+                    "pourcentage_presence": 0,
+                    "buts": 0,
+                    "passes_decisives": 0,
+                    "titularisations": 0,
+                    "minutes_jouees": 0,
+                    "cartons_jaunes": 0,
+                    "cartons_rouges": 0,
+                }
     # --------------------------------------------------------
     # 4. Calcul des statistiques
     # --------------------------------------------------------
