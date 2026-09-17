@@ -1067,6 +1067,36 @@ def delete_echange_message(
     except Exception as e:
         print(f"[ERREUR ECHANGE DELETE] {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+
+@app.delete("/chat/{categorie}/{message_id}")
+def delete_chat_message(
+    categorie: str,
+    message_id: str,
+    nom_parent: Optional[str] = Header(None, alias="nom_parent")
+):
+    check_db()
+    parent = (nom_parent or "").strip()
+    if not parent:
+        raise HTTPException(status_code=400,detail="Identifiant utilisateur manquant")
+    if not verifier_si_autorise(parent, categorie):
+        raise HTTPException(status_code=403,detail="Accès non autorisé")
+    try:
+        ref = (db.collection("chats").document(categorie).collection("messages").document(message_id))
+        doc = ref.get()
+        if not doc.exists:
+            raise HTTPException(status_code=404,detail="Message non trouvé")
+        est_admin = verifier_si_admin(parent,categorie)
+        auteur = (doc.to_dict().get("auteur", "").strip().lower())
+        if (not est_admin and auteur != parent.lower()):
+            raise HTTPException(status_code=403,detail="Vous ne pouvez supprimer que vos propres messages")
+        ref.delete()
+        return {"status": "deleted","message": "Message supprimé avec succès"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERREUR CHAT DELETE] {e}")
+        raise HTTPException(status_code=500,detail=str(e))
 
 ##########################
 ######## SONDAGES & VOTES
@@ -1536,7 +1566,7 @@ def update_convocations(
             # Modification
             # ------------------------------------------------------
             if est_mod:
-                titre_notif = (f"FCVV - Modification ({categorie})")
+                titre_notif = (f"FCVV - {categorie} - Modification")
                 corps_notif = (
                     f"Modification concernant "
                     f"{type_libelle} "
@@ -1550,33 +1580,25 @@ def update_convocations(
             else:
                 if type_evt == "ENTRAINEMENT":
                     corps_notif = (
-                        f"Nouvel entraînement : "
+                        f"Entraînement : "
                         f"{nom_affiche} "
                         f"({date_evt})"
                     ).strip()
-                    titre_notif = (
-                        f"FCVV - Entraînement ({categorie})"
-                    )
+                    titre_notif = (f"FCVV - {categorie} - Nouvel Entraînement")
                 elif type_evt == "MATCH":
                     corps_notif = (
                         f"Match contre "
                         f"{nom_affiche} "
                         f"({date_evt})"
                     ).strip()
-                    titre_notif = (
-                        f"FCVV - Nouvelle Convocation "
-                        f"({categorie})"
-                    )
+                    titre_notif = (f"FCVV - {categorie} - Nouveau Match")
                 else:
                     corps_notif = (
                         f"Événement : "
                         f"{nom_affiche} "
                         f"({date_evt})"
                     ).strip()
-                    titre_notif = (
-                        f"FCVV - Nouvel Événement "
-                        f"({categorie})"
-                    )
+                    titre_notif = (f"FCVV - {categorie} - Nouvel Événement")
             background_tasks.add_task(envoyer_notif_push,categorie,titre_notif,corps_notif,notif_type="evenement",match_id=match_id,sender=nom_parent)
         # ==========================================================
         # ✅ RÉPONSE
