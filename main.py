@@ -2126,6 +2126,8 @@ class UpdatePerformanceRequest(BaseModel):
     minutes_jouees: int = 0
     cartons_jaunes: int = 0
     cartons_rouges: int = 0
+    lavage_maillot: int = 0
+    collation: int = 0
 # ============================================================
 # ENREGISTRER / MODIFIER LES PERFORMANCES D'UN JOUEUR
 # ============================================================
@@ -2157,6 +2159,8 @@ def sauvegarder_performance_joueur(
             "minutes_jouees": max(0, data.minutes_jouees),
             "cartons_jaunes": max(0, data.cartons_jaunes),
             "cartons_rouges": max(0, data.cartons_rouges),
+            "lavage_maillot": max(0, data.lavage_maillot),
+            "collation": max(0, data.collation),
             "updated_at": firestore.SERVER_TIMESTAMP,
             "updated_by": nom_parent,
         }
@@ -2245,6 +2249,8 @@ def recuperer_stats(categorie: str,nom_parent: Optional[str] = Header(None,alias
             "minutes_jouees": p_data.get("minutes_jouees", 0),
             "cartons_jaunes": p_data.get("cartons_jaunes", 0),
             "cartons_rouges": p_data.get("cartons_rouges", 0),
+            "lavage_maillot": p_data.get("lavage_maillot", 0),
+            "collation": p_data.get("collation", 0),
         }
 
     # B. ENSUITE : On parcourt les users pour ajouter ceux qui ont des présences mais pas encore de performances
@@ -2285,6 +2291,8 @@ def recuperer_stats(categorie: str,nom_parent: Optional[str] = Header(None,alias
                     "minutes_jouees": 0,
                     "cartons_jaunes": 0,
                     "cartons_rouges": 0,
+                    "lavage_maillot": 0,
+                    "collation": 0,
                 }
     # --------------------------------------------------------
     # 4. Calcul des statistiques
@@ -2327,6 +2335,14 @@ def recuperer_stats(categorie: str,nom_parent: Optional[str] = Header(None,alias
                     "total_present": 0,
                     "total_evenements": 0,
                     "pourcentage_presence": 0,
+                    "buts": 0,
+                    "passes_decisives": 0,
+                    "titularisations": 0,
+                    "minutes_jouees": 0,
+                    "cartons_jaunes": 0,
+                    "cartons_rouges": 0,
+                    "lavage_maillot": 0,
+                    "collation": 0,
                 }
         # ----------------------------------------------------
         # Votes actuels
