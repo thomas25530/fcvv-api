@@ -598,7 +598,7 @@ def envoyer_notif_push(
         apns_config = messaging.APNSConfig(
             headers={"apns-priority": "10"},
             payload=messaging.APNSPayload(
-                aps=messaging.Aps(alert=messaging.ApsAlert(title=titre, body=corps), sound="default")
+                aps=messaging.Aps(alert=messaging.ApsAlert(title=titre, body=corps), sound="default",badge=1)
             ),
         )
         target_page = "home" if notif_type in ["manual", "home"] else "vestiaire"
@@ -666,7 +666,7 @@ def envoyer_notif_push_token(
                         title=titre,
                         body=corps
                     ),
-                    sound="default"
+                    sound="default", badge=1
                 )
             )
         )
@@ -761,7 +761,7 @@ def envoyer_notif_convocation_token(fcm_token: str,titre: str,corps: str,categor
         # ----------------------------------------------------
         # Configuration APNS (iOS)
         # ----------------------------------------------------
-        apns_config = messaging.APNSConfig(headers={"apns-priority": "10",},payload=messaging.APNSPayload(aps=messaging.Aps(sound="default",)),)
+        apns_config = messaging.APNSConfig(headers={"apns-priority": "10",},payload=messaging.APNSPayload(aps=messaging.Aps(sound="default",badge=1)),)
         # ----------------------------------------------------
         # Message FCM
         # ----------------------------------------------------
