@@ -2067,6 +2067,156 @@ def decrement_notification(nom_parent: Optional[str] = Header(None, alias="nom_p
         "status": "success",
         "badge": nouveau_badge
     }
+
+def recuperer_utilisateurs_fcm_categorie(categorie: str) -> list[dict]:
+    """
+    Récupère tous les utilisateurs autorisés pour une catégorie
+    ainsi que leurs tokens FCM.
+    Retour :
+    [
+        {
+            "id": "prenom_nom",
+            "tokens": ["token1", "token2"]
+        }
+    ]
+    """
+    check_db()
+    categorie = str(categorie or "").strip()
+    if not categorie:
+        print("[FCM CATEGORIE] Catégorie vide.")
+        return []
+    utilisateurs = []
+    try:
+        docs = db.collection("users").stream()
+        for doc in docs:
+            data = doc.to_dict() or {}
+            roles_par_categorie = data.get("roles_par_categorie",{})
+            if not isinstance(roles_par_categorie, dict):
+                continue
+            # L'utilisateur doit appartenir à cette catégorie
+            role = str(roles_par_categorie.get(categorie, "")).strip().upper()
+
+            # Seuls les utilisateurs réellement autorisés
+            # reçoivent les notifications.
+            if role not in ("PARENT", "ADMIN", "COACH"):
+                continue
+            tokens = data.get("fcm_tokens", [])
+            if not isinstance(tokens, list):
+                tokens = []
+            tokens = list(dict.fromkeys(
+                str(token).strip()
+                for token in tokens
+                if str(token).strip()
+            ))
+            # On conserve l'utilisateur même sans token :
+            # la notification sera enregistrée dans Firestore,
+            # mais aucun push FCM ne sera envoyé.
+            utilisateurs.append({
+                "id": doc.id,
+                "tokens": tokens
+            })
+        print(
+            f"[FCM CATEGORIE] "
+            f"categorie={categorie} | "
+            f"utilisateurs={len(utilisateurs)} | "
+            f"tokens={sum(len(u['tokens']) for u in utilisateurs)}"
+        )
+        return utilisateurs
+    except Exception as e:
+        print(
+            f"[FCM CATEGORIE ERROR] "
+            f"categorie={categorie} | erreur={e}"
+        )
+        return []
+
+def recuperer_utilisateurs_fcm_pour_joueur(joueur_nom: str,categorie: str) -> list[dict]:
+    """
+    Recherche tous les utilisateurs autorisés d'une catégorie
+    qui ont le joueur demandé dans joueurs_par_categorie.
+
+    Retour :
+    [
+        {
+            "id": "prenom_nom",
+            "tokens": ["token1", "token2"]
+        }
+    ]
+    """
+    check_db()
+    joueur_recherche = str(joueur_nom or "").strip()
+    categorie = str(categorie or "").strip()
+    if not joueur_recherche or not categorie:
+        return []
+    utilisateurs = []
+    try:
+        docs = db.collection("users").stream()
+        joueur_recherche_normalise = joueur_recherche.casefold()
+        for doc in docs:
+            data = doc.to_dict() or {}
+            # ---------------------------------------------
+            # Vérification du rôle dans la catégorie
+            # ---------------------------------------------
+            roles_par_categorie = data.get("roles_par_categorie",{})
+            if not isinstance(roles_par_categorie, dict):
+                continue
+            role = str(roles_par_categorie.get(categorie, "")).strip().upper()
+            if role not in ("PARENT", "ADMIN", "COACH"):
+                continue
+            # ---------------------------------------------
+            # Récupération des joueurs associés
+            # ---------------------------------------------
+            joueurs_par_categorie = data.get("joueurs_par_categorie",{})
+            if not isinstance(joueurs_par_categorie, dict):
+                continue
+            joueurs = joueurs_par_categorie.get(categorie,[])
+            if not isinstance(joueurs, list):
+                continue
+            # ---------------------------------------------
+            # Recherche du joueur
+            # ---------------------------------------------
+            joueur_trouve = False
+            for joueur in joueurs:
+                if isinstance(joueur, dict):
+                    nom = str(joueur.get("nom", "")).strip()
+                    prenom = str(joueur.get("prenom", "")).strip()
+                    joueur_normalise = (f"{nom} {prenom}").strip().casefold()
+                else:
+                    joueur_normalise = (str(joueur).strip().casefold())
+
+                if joueur_normalise == joueur_recherche_normalise:
+                    joueur_trouve = True
+                    break
+            if not joueur_trouve:
+                continue
+            # ---------------------------------------------
+            # Récupération des tokens FCM
+            # ---------------------------------------------
+            tokens = data.get("fcm_tokens",[])
+            if not isinstance(tokens, list):
+                tokens = []
+            tokens = list(dict.fromkeys(
+                str(token).strip()
+                for token in tokens
+                if str(token).strip()
+            ))
+            utilisateurs.append({"id": doc.id,"tokens": tokens})
+        print(
+            f"[FCM JOUEUR] "
+            f"joueur={joueur_recherche} | "
+            f"categorie={categorie} | "
+            f"utilisateurs={len(utilisateurs)} | "
+            f"tokens={sum(len(u['tokens']) for u in utilisateurs)}"
+        )
+
+        return utilisateurs
+    except Exception as e:
+        print(
+            f"[FCM JOUEUR ERROR] "
+            f"joueur={joueur_recherche} | "
+            f"categorie={categorie} | "
+            f"erreur={e}"
+        )
+        return []
     
 ####################################################
 ####################################################
