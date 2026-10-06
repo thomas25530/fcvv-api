@@ -3,6 +3,9 @@ import os
 from datetime import datetime, timezone
 from typing import List, Optional, Union, Dict, Any
 
+from google.cloud.firestore_v1 import Increment
+import uuid
+
 import hashlib
 import hmac
 
@@ -159,35 +162,22 @@ def valider_utilisateur_via_email(token: str = Query(...)):
     # ==========================================================
     # 🔔 NOTIFICATION CIBLÉE DU PARENT
     # ==========================================================
-    fcm_tokens = user_data.get("fcm_tokens",[])
-    if not isinstance(fcm_tokens, list):
-        fcm_tokens = []
-    fcm_tokens = [
-        str(token).strip()
-        for token in fcm_tokens
-        if str(token).strip()
-    ]
-    nom_utilisateur = user_data.get("nom",id_utilisateur)
+    nom_utilisateur = user_data.get("nom", id_utilisateur)
+
     titre_push = "FCVV - Accès validé"
+
     corps_push = (
         f"Votre demande d'accès à la catégorie "
         f"{categorie} a été validée."
     )
-    print(
-        f"[FCM VALIDATION] "
-        f"Parent={nom_utilisateur} | "
-        f"categorie={categorie} | "
-        f"role={role_final} | "
-        f"tokens={len(fcm_tokens)}"
+
+    envoyer_notif_utilisateur_avec_badge(
+        id_utilisateur=id_utilisateur,
+        titre=titre_push,
+        corps=corps_push,
+        categorie=categorie,
+        notif_type="validation",
     )
-    for fcm_token in fcm_tokens:
-        envoyer_notif_push_token(
-            fcm_token=fcm_token,
-            titre=titre_push,
-            corps=corps_push,
-            categorie=categorie,
-            notif_type="validation"
-        )
 
     return f"""
     <html>
@@ -219,9 +209,9 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
     categorie = user.get("categorie", "").strip()
     demande_admin = bool(user.get("demande_admin", False))
     # Ancien format : un seul joueur
-    nouveau_joueur = user.get("joueur_associe","").strip()
+    nouveau_joueur = user.get("joueur_associe", "").strip()
     # Nouveau format : plusieurs joueurs
-    joueurs_associes = user.get("joueurs_associes",[])
+    joueurs_associes = user.get("joueurs_associes", [])
     # Sécurité : on s'assure que c'est bien une liste
     if not isinstance(joueurs_associes, list):
         joueurs_associes = []
@@ -257,7 +247,7 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
     # devient :
     # "quentin_dominati"
     # ==========================================================
-    id_utilisateur = (raw_nom.replace(" ", "_").lower())
+    id_utilisateur = raw_nom.replace(" ", "_").lower()
     doc_ref = db.collection("users").document(id_utilisateur)
     doc_snapshot = doc_ref.get()
     est_premiere_demande = False
@@ -274,17 +264,19 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
             "demandes_admin_par_categorie": {
                 categorie: demande_admin
             },
+            # 🆕 COMPTEUR DE NOTIFICATIONS
+            "notifications_non_lues": 0,
             "created_at": firestore.SERVER_TIMESTAMP
         }
-        if fcm_token:
-            doc_data["fcm_tokens"] = [fcm_token]
+        if fcm_token:doc_data["fcm_tokens"] = [fcm_token]
         doc_ref.set(doc_data)
         est_premiere_demande = True
         print(
             f"[REGISTER] Nouveau parent="
             f"{raw_nom} | "
             f"categorie={categorie} | "
-            f"joueurs={joueurs_associes}"
+            f"joueurs={joueurs_associes} | "
+            f"notifications_non_lues=0"
         )
     # ==========================================================
     # 🟡 CAS 2 : UTILISATEUR EXISTANT
@@ -300,24 +292,36 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
         if not isinstance(joueurs_dict, dict):
             joueurs_dict = {}
         # ======================================================
+        # 🆕 COMPATIBILITÉ ANCIENS UTILISATEURS
+        #
+        # Si le champ notifications_non_lues n'existe pas encore,
+        # on l'initialise à 0.
+        #
+        # IMPORTANT :
+        # on ne remet PAS le compteur à zéro s'il existe déjà.
+        # ======================================================
+        update_data = {}
+        if "notifications_non_lues" not in data:
+            update_data["notifications_non_lues"] = 0
+            print(
+                f"[REGISTER] Initialisation du compteur "
+                f"notifications_non_lues=0 pour "
+                f"{raw_nom}"
+            )
+        # ======================================================
         # 🔴 CAS 2A : CATÉGORIE DÉJÀ EXISTANTE
         #
         # TOUTE nouvelle demande pour cette catégorie
         # est considérée comme une tentative d'usurpation.
-        #
-        # Peu importe :
-        # - le joueur demandé
-        # - si le joueur est déjà associé
-        # - si la liste est identique
-        # - si la liste est différente
         # ======================================================
         if categorie in roles_dict:
             liste_joueurs_existants = joueurs_dict.get(categorie,[])
-            if not isinstance(
-                liste_joueurs_existants,
-                list
-            ):
+            if not isinstance(liste_joueurs_existants,list):
                 liste_joueurs_existants = []
+            # On sauvegarde éventuellement le compteur
+            # manquant avant de refuser la demande.
+            if update_data:
+                doc_ref.update(update_data)
             print(
                 f"[SECURITE]"
                 f"TENTATIVE D'USURPATION POSSIBLE : "
@@ -333,30 +337,26 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
         #
         # L'utilisateur existe déjà mais cette catégorie
         # n'existe pas encore dans son compte.
-        #
-        # La nouvelle demande est donc autorisée.
         # ======================================================
         else:
             roles_dict[categorie] = "ATTENTE"
             joueurs_dict[categorie] = joueurs_associes
-            demandes_admin_dict = data.get(
-                "demandes_admin_par_categorie",
-                {}
-            )
-            if not isinstance(demandes_admin_dict, dict):
+            demandes_admin_dict = data.get("demandes_admin_par_categorie",{})
+            if not isinstance(demandes_admin_dict,dict):
                 demandes_admin_dict = {}
             demandes_admin_dict[categorie] = demande_admin
-            update_data = {
+            update_data.update({
                 "roles_par_categorie": roles_dict,
                 "joueurs_par_categorie": joueurs_dict,
                 "demandes_admin_par_categorie": demandes_admin_dict
-            }
+            })
+            # ==================================================
+            # FCM TOKEN
+            # ==================================================
             if fcm_token:
-                tokens_existants = data.get("fcm_tokens", [])
-            
-                if not isinstance(tokens_existants, list):
+                tokens_existants = data.get("fcm_tokens",[])
+                if not isinstance(tokens_existants,list):
                     tokens_existants = []
-            
                 tokens_existants = [
                     str(token).strip()
                     for token in tokens_existants
@@ -364,7 +364,7 @@ def register_user(user: dict, background_tasks: BackgroundTasks):
                 ]
                 if fcm_token not in tokens_existants:
                     tokens_existants.append(fcm_token)
-                update_data["fcm_tokens"] = tokens_existants
+                update_data["fcm_tokens"] = (tokens_existants)
             doc_ref.update(update_data)
             est_premiere_demande = True
             print(
@@ -633,7 +633,8 @@ def envoyer_notif_push_token(
     titre: str,
     corps: str,
     categorie: str,
-    notif_type: str = "validation"
+    notif_type: str = "validation",
+    badge_count: int = None,
 ):
     if not fcm_token:
         print(
@@ -656,18 +657,23 @@ def envoyer_notif_push_token(
         # ---------------------------------------------------------
         # Configuration APNS (iOS)
         # ---------------------------------------------------------
+        aps_kwargs = {
+            "alert": messaging.ApsAlert(
+                title=titre,
+                body=corps
+            ),
+            "sound": "default",
+        }
+
+        if badge_count is not None:
+            aps_kwargs["badge"] = max(0, int(badge_count))
+
         apns_config = messaging.APNSConfig(
             headers={
                 "apns-priority": "10"
             },
             payload=messaging.APNSPayload(
-                aps=messaging.Aps(
-                    alert=messaging.ApsAlert(
-                        title=titre,
-                        body=corps
-                    ),
-                    sound="default", badge=1
-                )
+                aps=messaging.Aps(**aps_kwargs)
             )
         )
         # ---------------------------------------------------------
@@ -740,7 +746,7 @@ def envoyer_notif_push_token(
 #
 # ============================================================
 
-def envoyer_notif_convocation_token(fcm_token: str,titre: str,corps: str,categorie: str,match_id: str,):
+def envoyer_notif_convocation_token(fcm_token: str,titre: str,corps: str,categorie: str,match_id: str,badge_count: int = None,):
     """
     Envoie une notification FCM de convocation sur un token précis.
     Fonction indépendante de envoyer_notif_push_token().
@@ -761,7 +767,26 @@ def envoyer_notif_convocation_token(fcm_token: str,titre: str,corps: str,categor
         # ----------------------------------------------------
         # Configuration APNS (iOS)
         # ----------------------------------------------------
-        apns_config = messaging.APNSConfig(headers={"apns-priority": "10",},payload=messaging.APNSPayload(aps=messaging.Aps(sound="default",badge=1)),)
+        aps_kwargs = {
+            "sound": "default",
+        }
+
+        if badge_count is not None:
+            aps_kwargs["badge"] = max(
+                0,
+                int(badge_count)
+            )
+
+        apns_config = messaging.APNSConfig(
+            headers={
+                "apns-priority": "10"
+            },
+            payload=messaging.APNSPayload(
+                aps=messaging.Aps(
+                    **aps_kwargs
+                )
+            ),
+        )
         # ----------------------------------------------------
         # Message FCM
         # ----------------------------------------------------
@@ -846,10 +871,10 @@ def envoyer_notification_manuelle(
     if not nom_parent or not verifier_si_admin(nom_parent, categorie):
         raise HTTPException(status_code=403, detail="Accès refusé")
     try:
-        envoyer_notif_push(
-            topic=categorie, 
-            titre=notif.titre, 
-            corps=notif.corps, 
+        envoyer_notif_categorie_avec_badge(
+            categorie=categorie,
+            titre=notif.titre,
+            corps=notif.corps,
             notif_type="manual"
         )
         return {"status": "success", "message": "Notification envoyee avec succes"}
@@ -891,8 +916,8 @@ def envoyer_notification_admin(
             detail="Accès admin refusé"
         )
     try:
-        envoyer_notif_push(
-            topic=categorie,
+        envoyer_notif_categorie_avec_badge(
+            categorie=categorie,
             titre=notif.titre,
             corps=notif.corps,
             notif_type="manual"
@@ -982,12 +1007,12 @@ def poster_message(
         }
         db.collection("chats").document(categorie).collection("messages").add(msg_data)
         background_tasks.add_task(
-            envoyer_notif_push,
-            categorie,
-            f"FCVV - Nouveau message ({categorie})",
-            f"{message.auteur}: {message.contenu}",
+            envoyer_notif_categorie_avec_badge,
+            categorie=categorie,
+            titre=f"FCVV - Nouveau message ({categorie})",
+            corps=f"{message.auteur}: {message.contenu}",
             notif_type="chat",
-            sender=message.auteur
+            exclure_utilisateur=message.auteur,
         )
         return {"message": "Message envoyé avec succès"}
     except Exception as e:
@@ -1024,12 +1049,12 @@ def poster_echange_message(
         }
         db.collection("echanges").document(categorie).collection("messages").add(msg_data)
         background_tasks.add_task(
-            envoyer_notif_push, 
-            categorie, 
-            f"FCVV - Nouveau message ({categorie})", 
-            f"{parent}: {contenu}", 
-            notif_type="echange", 
-            sender=parent
+            envoyer_notif_categorie_avec_badge,
+            categorie=categorie,
+            titre=f"FCVV - Nouveau message ({categorie})",
+            corps=f"{parent}: {contenu}",
+            notif_type="echange",
+            exclure_utilisateur=parent,
         )
         return {"status": "success", "message": "Message envoyé avec succès"}
     except Exception as e:
@@ -1189,12 +1214,12 @@ def create_sondage(
     try:
         db.collection(f"sondages_{categorie}").add(sondage.model_dump())
         background_tasks.add_task(
-            envoyer_notif_push,
-            categorie,
-            f"FCVV - Nouveau sondage ({categorie})",
-            f"Sondage : {sondage.titre}",
+            envoyer_notif_categorie_avec_badge,
+            categorie=categorie,
+            titre=f"FCVV - Nouveau sondage ({categorie})",
+            corps=f"Sondage : {sondage.titre}",
             notif_type="evenement",
-            sender=nom_parent
+            exclure_utilisateur=nom_parent,
         )
         return {"status": "created"}
     except Exception as e:
@@ -1323,22 +1348,19 @@ def get_user_role(
 ######## CONVOCATIONS & EVENEMENTS
 ####################################################
 @app.put("/convocations/update/{categorie}/{match_id}")
-def update_convocations(
-    categorie: str,
-    match_id: str,
-    payload: ConvocationModel,
-    background_tasks: BackgroundTasks,
-    nom_parent: Optional[str] = Header(None, alias="nom_parent"),
-):
+def update_convocations(categorie: str,match_id: str,payload: ConvocationModel,background_tasks: BackgroundTasks,nom_parent: Optional[str] = Header(None, alias="nom_parent"),):
     check_db()
     if not nom_parent or not verifier_si_admin(nom_parent, categorie):
-        raise HTTPException(status_code=403, detail="Accès refusé")
+        raise HTTPException(status_code=403,detail="Accès refusé")
     try:
         data_dict = payload.model_dump()
-        type_evt = data_dict.get("type", "EVENEMENT").upper()
+        type_evt = str(data_dict.get("type", "EVENEMENT")).strip().upper()
         date_evt = str(data_dict.get("date", "")).strip()
         date_brute = date_evt.replace("/", "-")
         adversaire = str(data_dict.get("adversaire", "")).strip()
+        # ==========================================================
+        # 🔄 GÉNÉRATION / CORRECTION DU MATCH_ID
+        # ==========================================================
         est_un_nouveau = (
             not match_id
             or match_id == "Nouvel événement"
@@ -1351,37 +1373,74 @@ def update_convocations(
             type_evt == "ENTRAINEMENT"
             and not match_id.startswith("entrainement_")
         )
-        # ==========================================================
-        # 🔄 GÉNÉRATION / CORRECTION DU MATCH_ID
-        # ==========================================================
         if est_un_nouveau or type_incoherent:
             if type_evt == "MATCH":
                 adversaire_clean = (adversaire or "inconnu").replace(" ", "_").lower()
-                heure_rdv = str(data_dict.get("heure_rdv", "")).strip().replace(":", "h") or "00h00"
-                nouveau_match_id = (f"match_{adversaire_clean}_{date_brute}_{heure_rdv}").strip("_")
+                heure_rdv = (str(data_dict.get("heure_rdv","")).strip().replace(":", "h") or "00h00")
+                nouveau_match_id = (
+                    f"match_"
+                    f"{adversaire_clean}_"
+                    f"{date_brute}_"
+                    f"{heure_rdv}"
+                ).strip("_")
             elif type_evt == "ENTRAINEMENT":
-                heure_ent = str(data_dict.get("heure",data_dict.get("heure_rdv", ""))).strip().replace(":", "h") or "00h00"
-                nouveau_match_id = (f"entrainement_{date_brute}_{heure_ent}").strip("_")
+                heure_ent = (
+                    str(
+                        data_dict.get(
+                            "heure",
+                            data_dict.get(
+                                "heure_rdv",
+                                ""
+                            )
+                        )
+                    )
+                    .strip()
+                    .replace(":", "h")
+                    or "00h00"
+                )
+                nouveau_match_id = (
+                    f"entrainement_"
+                    f"{date_brute}_"
+                    f"{heure_ent}"
+                ).strip("_")
             else:
-                titre_evt_temp = str(data_dict.get("titre", "evt")).strip().replace(" ", "_").lower()
-                nouveau_match_id = (f"evt_{titre_evt_temp}_{date_brute}").strip("_")
-            # Si changement d'identifiant, suppression de l'ancien document
+                titre_evt_temp = (
+                    str(
+                        data_dict.get(
+                            "titre",
+                            "evt"
+                        )
+                    )
+                    .strip()
+                    .replace(" ", "_")
+                    .lower()
+                )
+                nouveau_match_id = (
+                    f"evt_"
+                    f"{titre_evt_temp}_"
+                    f"{date_brute}"
+                ).strip("_")
+            # ------------------------------------------------------
+            # Suppression de l'ancien document si l'ID change
+            # ------------------------------------------------------
             if (
                 not est_un_nouveau
                 and match_id
                 and match_id != nouveau_match_id
             ):
                 try:
-                    db.collection(
-                        f"convocations_{categorie}"
-                    ).document(match_id).delete()
-                except Exception:
-                    pass
+                    db.collection(f"convocations_{categorie}").document(match_id).delete()
+                except Exception as e:
+                    print(
+                        "[CONVOCATION] "
+                        f"Impossible de supprimer "
+                        f"l'ancien document : {e}"
+                    )
             match_id = nouveau_match_id
         # ==========================================================
         # 📄 DOCUMENT CIBLE
         # ==========================================================
-        doc_ref = db.collection(f"convocations_{categorie}").document(match_id)
+        doc_ref = (db.collection(f"convocations_{categorie}").document(match_id))
         # ==========================================================
         # 🔎 RÉCUPÉRATION DE L'ANCIENNE CONVOCATION
         # ==========================================================
@@ -1393,9 +1452,10 @@ def update_convocations(
         except Exception as e:
             print(
                 "[FCM CONVOCATION] "
-                f"Impossible de recuperer l'ancienne convocation : {e}"
+                "Impossible de récupérer "
+                f"l'ancienne convocation : {e}"
             )
-        anciens_joueurs_convoques = ancien_data.get("joueurs_convoques",[])
+        anciens_joueurs_convoques = (ancien_data.get("joueurs_convoques",[]))
         if not isinstance(anciens_joueurs_convoques,list):
             anciens_joueurs_convoques = []
         # ==========================================================
@@ -1403,23 +1463,24 @@ def update_convocations(
         # ==========================================================
         doc_ref.set(data_dict,merge=True)
         # ==========================================================
-        # 🔔 NOTIFICATIONS CIBLÉES
-        #    UNIQUEMENT POUR LES NOUVEAUX CONVOQUÉS
+        # 🔔 NOTIFICATIONS DE CONVOCATION
+        #
+        # UNIQUEMENT POUR LES NOUVEAUX CONVOQUÉS
         # ==========================================================
         if type_evt == "MATCH":
             activer_convocation = bool(data_dict.get("activer_convocation",False))
-            joueurs_actuels = data_dict.get("joueurs_convoques",[])
+            joueurs_actuels = (data_dict.get("joueurs_convoques",[]))
             if not isinstance(joueurs_actuels,list):
                 joueurs_actuels = []
             # ------------------------------------------------------
-            # Normalisation joueur
+            # Normalisation d'un joueur
             # ------------------------------------------------------
             def normaliser_joueur(joueur):
                 if isinstance(joueur, dict):
-                    nom = str(joueur.get("nom", "")).strip()
-                    prenom = str(joueur.get("prenom", "")).strip()
+                    nom = str(
+                        joueur.get("nom","")).strip()
+                    prenom = str(joueur.get("prenom","")).strip()
                     return (f"{nom} {prenom}").strip().casefold()
-
                 return str(joueur).strip().casefold()
             # ------------------------------------------------------
             # Anciens joueurs
@@ -1430,7 +1491,7 @@ def update_convocations(
                 if identite:
                     anciens_identites.add(identite)
             # ------------------------------------------------------
-            # Détection des NOUVEAUX convoqués
+            # Détection des nouveaux convoqués
             # ------------------------------------------------------
             joueurs_nouvellement_convoques = []
             for joueur in joueurs_actuels:
@@ -1447,100 +1508,128 @@ def update_convocations(
                 f"actuels={len(joueurs_actuels)} | "
                 f"nouveaux={len(joueurs_nouvellement_convoques)}"
             )
-            # ------------------------------------------------------
-            # Envoi uniquement si les convocations sont actives
-            # ------------------------------------------------------
+            # ======================================================
+            # 📢 ENVOI DES CONVOCATIONS
+            # ======================================================
             if (activer_convocation and joueurs_nouvellement_convoques):
                 titre_convocation = (f"FCVV - Convocation ({categorie})")
                 adversaire_affiche = (adversaire or "match")
                 date_affichee = (date_evt or "date à confirmer")
                 heure_affichee = str(data_dict.get("heure_sur_place","")).strip()
                 if not heure_affichee:
-                    heure_affichee = str(
-                        data_dict.get("heure_rdv","")).strip()
+                    heure_affichee = str(data_dict.get("heure_rdv","")).strip()
                 # --------------------------------------------------
-                # Préparation des informations du match
+                # Corps commun
                 # --------------------------------------------------
                 corps_base = (
-                    f"est convoqué(e) pour le match "
+                    "est convoqué(e) pour le match "
                     f"contre {adversaire_affiche} "
                     f"le {date_affichee}"
                 )
                 if heure_affichee:
-                    corps_base += (
-                        f" à {heure_affichee}"
-                    )
+                    corps_base += (f" à {heure_affichee}")
                 # --------------------------------------------------
-                # Fonction d'envoi en arrière-plan
+                # Fonction exécutée en arrière-plan
                 # --------------------------------------------------
                 def envoyer_notifications_nouveaux_convoques():
-                    tokens_deja_notifies = set()
-                    for joueur in joueurs_nouvellement_convoques:
+                    total_joueurs = 0
+                    total_utilisateurs = 0
+                    total_notifications = 0
+                    for joueur in (joueurs_nouvellement_convoques):
                         # ------------------------------------------
-                        # Récupération nom + catégorie
+                        # Récupération du joueur
                         # ------------------------------------------
-                        if isinstance(joueur, dict):
+                        if isinstance(joueur,dict):
                             nom = str(joueur.get("nom","")).strip()
                             prenom = str(joueur.get("prenom","")).strip()
                             nom_recherche = (f"{nom} {prenom}").strip()
                             categorie_joueur = str(joueur.get("categorie",categorie)).strip() or categorie
                         else:
                             nom_recherche = str(joueur).strip()
-                            categorie_joueur = categorie
+                            categorie_joueur = (categorie)
                         if not nom_recherche:
                             continue
+                        total_joueurs += 1
                         # ------------------------------------------
-                        # Recherche des tokens des parents
+                        # Recherche des utilisateurs
+                        # correspondant à ce joueur
                         # ------------------------------------------
-                        tokens = (recuperer_tokens_fcm_pour_joueur(joueur_nom=nom_recherche,categorie=categorie_joueur))
-                        if not tokens:
+                        utilisateurs = (recuperer_utilisateurs_fcm_pour_joueur(joueur_nom=nom_recherche,categorie=categorie_joueur,))
+                        if not utilisateurs:
                             print(
                                 "[FCM CONVOCATION] "
-                                f"Aucun token pour "
+                                f"Aucun utilisateur pour "
                                 f"{nom_recherche} "
-                                f"(categorie={categorie_joueur})"
+                                f"(categorie="
+                                f"{categorie_joueur})"
                             )
                             continue
                         # ------------------------------------------
-                        # Notification personnalisée au parent
+                        # Notification personnalisée
                         # ------------------------------------------
                         corps_convocation = (
                             f"{nom_recherche} "
                             f"{corps_base}."
                         )
-                        for fcm_token in tokens:
-                            if fcm_token in tokens_deja_notifies:
+                        for utilisateur in utilisateurs:
+                            id_utilisateur = str(utilisateur.get("id","")).strip()
+                            if not id_utilisateur:
                                 continue
-                            succes = (envoyer_notif_convocation_token(fcm_token=fcm_token,titre=titre_convocation,corps=corps_convocation,categorie=categorie,match_id=match_id,))
+                            # --------------------------------------
+                            # Protection supplémentaire :
+                            # l'expéditeur/admin ne reçoit jamais
+                            # sa propre notification.
+                            # --------------------------------------
+                            succes = (envoyer_notif_convocation_utilisateur_avec_badge(id_utilisateur=id_utilisateur,titre=titre_convocation,corps=corps_convocation,categorie=categorie_joueur,match_id=match_id,exclure_utilisateur=nom_parent,))
                             if succes:
-                                tokens_deja_notifies.add(fcm_token)
+                                total_utilisateurs += 1
+                                total_notifications += 1
+                                print(
+                                    "[FCM CONVOCATION] "
+                                    f"Notification envoyée à "
+                                    f"{id_utilisateur} "
+                                    f"pour {nom_recherche}"
+                                )
+                            else:
+                                print(
+                                    "[FCM CONVOCATION] "
+                                    f"Notification non envoyée à "
+                                    f"{id_utilisateur} "
+                                    f"pour {nom_recherche}"
+                                )
                     print(
                         "[FCM CONVOCATION] "
-                        f"Notifications terminees pour "
+                        f"Notifications terminées | "
                         f"match={match_id} | "
-                        f"tokens_notifies="
-                        f"{len(tokens_deja_notifies)}"
+                        f"joueurs={total_joueurs} | "
+                        f"utilisateurs={total_utilisateurs} | "
+                        f"notifications={total_notifications}"
                     )
-                # ----------------------------------------------
+                # --------------------------------------------------
                 # Exécution en arrière-plan
-                # ----------------------------------------------
+                # --------------------------------------------------
                 background_tasks.add_task(envoyer_notifications_nouveaux_convoques)
         # ==========================================================
-        # 🔔 NOTIFICATION GÉNÉRALE EXISTANTE
+        # 🔔 NOTIFICATION GÉNÉRALE DE L'ÉVÉNEMENT
         # ==========================================================
         titre_evt = str(data_dict.get("titre","")).strip()
         adversaire = str(data_dict.get("adversaire","")).strip()
         date_evt = str(data_dict.get("date","")).strip()
-        est_mod = data_dict.get("est_modification",False)
+        est_mod = bool(data_dict.get("est_modification",False))
         motif = str(data_dict.get("dernier_commit","")).strip()
-        # Si c'est une modification et que le dernier commit
-        # est vide, on n'envoie pas la notification générale.
+        # ==========================================================
+        # Modification sans motif = pas de notification générale
+        # ==========================================================
         if est_mod and not motif:
             print(
-                "[NOTIF] Modification ignoree "
-                f"(dernier_commit vide) pour {match_id}"
+                "[NOTIF] Modification ignorée "
+                "(dernier_commit vide) "
+                f"pour {match_id}"
             )
         else:
+            # ------------------------------------------------------
+            # Détermination du libellé
+            # ------------------------------------------------------
             if type_evt == "ENTRAINEMENT":
                 nom_affiche = (
                     titre_evt
@@ -1554,21 +1643,27 @@ def update_convocations(
                     if adversaire
                     else match_id
                 )
-                type_libelle = (f"le match contre {nom_affiche}")
+                type_libelle = (
+                    f"le match contre "
+                    f"{nom_affiche}"
+                )
             else:
                 nom_affiche = (
                     titre_evt
                     if titre_evt
                     else match_id
                 )
-                type_libelle = (f"l'événement {nom_affiche}")
+                type_libelle = (
+                    f"l'événement "
+                    f"{nom_affiche}"
+                )
             # ------------------------------------------------------
             # Modification
             # ------------------------------------------------------
             if est_mod:
                 titre_notif = (f"FCVV - {categorie} - Modification")
                 corps_notif = (
-                    f"Modification concernant "
+                    "Modification concernant "
                     f"{type_libelle} "
                     f"({date_evt})."
                 )
@@ -1580,26 +1675,42 @@ def update_convocations(
             else:
                 if type_evt == "ENTRAINEMENT":
                     corps_notif = (
-                        f"Entraînement : "
+                        "Entraînement : "
                         f"{nom_affiche} "
                         f"({date_evt})"
                     ).strip()
-                    titre_notif = (f"FCVV - {categorie} - Nouvel Entraînement")
+                    titre_notif = (
+                        f"FCVV - {categorie} "
+                        "- Nouvel Entraînement"
+                    )
                 elif type_evt == "MATCH":
                     corps_notif = (
-                        f"Match contre "
+                        "Match contre "
                         f"{nom_affiche} "
                         f"({date_evt})"
                     ).strip()
-                    titre_notif = (f"FCVV - {categorie} - Nouveau Match")
+                    titre_notif = (
+                        f"FCVV - {categorie} "
+                        "- Nouveau Match"
+                    )
                 else:
                     corps_notif = (
-                        f"Événement : "
+                        "Événement : "
                         f"{nom_affiche} "
                         f"({date_evt})"
                     ).strip()
-                    titre_notif = (f"FCVV - {categorie} - Nouvel Événement")
-            background_tasks.add_task(envoyer_notif_push,categorie,titre_notif,corps_notif,notif_type="evenement",match_id=match_id,sender=nom_parent)
+                    titre_notif = (
+                        f"FCVV - {categorie} "
+                        "- Nouvel Événement"
+                    )
+            # ------------------------------------------------------
+            # Notification générale avec badge personnalisé
+            #
+            # IMPORTANT :
+            # nom_parent est exclu AVANT la création Firestore
+            # et donc avant l'incrément du badge.
+            # ------------------------------------------------------
+            background_tasks.add_task(envoyer_notif_categorie_avec_badge,categorie=categorie,titre=titre_notif,corps=corps_notif,notif_type="evenement",match_id=match_id,exclure_utilisateur=nom_parent,)
         # ==========================================================
         # ✅ RÉPONSE
         # ==========================================================
@@ -1607,50 +1718,7 @@ def update_convocations(
     except Exception as e:
         print(f"[API] Erreur update_convocations : {e}")
         raise HTTPException(status_code=500,detail=str(e))
-
-@app.put("/convocations/batch-update/{categorie}")
-def batch_update_convocations(
-    categorie: str,
-    payload: BatchConvocationModel,
-    background_tasks: BackgroundTasks,
-    nom_parent: Optional[str] = Header(None, alias="nom_parent"),
-):
-    check_db()
-    if not nom_parent or not verifier_si_admin(nom_parent, categorie):
-        raise HTTPException(status_code=403, detail="Accès refusé")
-    try:
-        batch = db.batch()
-        nb_evenements = len(payload.evenements)
-        if nb_evenements == 0:
-            return {"status": "updated", "count": 0}
-        premiere_date = ""
-        derniere_date = ""
-        for idx, evt in enumerate(payload.evenements):
-            data_dict = evt.model_dump()
-            date_brute = data_dict.get("date", "").replace("/", "-")
-            date_evt = data_dict.get("date", "")
-            if idx == 0:
-                premiere_date = date_evt
-            if idx == nb_evenements - 1:
-                derniere_date = date_evt
-            heure_ent = data_dict.get("heure", data_dict.get("heure_rdv", "")).replace(":", "h") or "00h00"
-            match_id = f"entrainement_{date_brute}_{heure_ent}".strip("_")
-            doc_ref = db.collection(f"convocations_{categorie}").document(match_id)
-            batch.set(doc_ref, data_dict, merge=True)
-        batch.commit()
-        titre_notif = f"FCVV - Entraînements ({categorie})"
-        if nb_evenements == 1:
-            corps_notif = f"1 nouvel entraînement a été planifié pour le {premiere_date}."
-        else:
-            corps_notif = f"{nb_evenements} nouveaux entraînements planifiés (du {premiere_date} au {derniere_date})."
-        background_tasks.add_task(
-            envoyer_notif_push, categorie, titre_notif, corps_notif, notif_type="evenement", sender=nom_parent
-        )
-        return {"status": "updated", "count": nb_evenements}
-    except Exception as e:
-        print(f"[ERREUR BATCH ENTRAINEMENTS] {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
+ 
 @app.delete("/convocations/delete/{categorie}/{match_id}")
 def delete_convocation(
     categorie: str,
@@ -1696,6 +1764,310 @@ def get_one_convocation(
         raise HTTPException(status_code=404, detail="Match non trouvé")
     return doc.to_dict()
 
+# ============================================================
+# ============================================================
+# AJOUT METHODE POUR INCREMENTER DECREMENTER BADGE IOS
+# ============================================================
+# ============================================================
+@firestore.transactional
+def _increment_badge_transaction(transaction, user_ref):
+    snapshot = user_ref.get(transaction=transaction)
+    if not snapshot.exists:
+        return 0
+    data = snapshot.to_dict() or {}
+    try:
+        actuel = int(data.get("notifications_non_lues", 0))
+    except (TypeError, ValueError):
+        actuel = 0
+    nouveau = actuel + 1
+    transaction.update(user_ref,{"notifications_non_lues": nouveau})
+    return nouveau
+
+def incrementer_badge_utilisateur(id_utilisateur: str) -> int:
+    """
+    Incrémente de 1 le compteur notifications_non_lues
+    et retourne la nouvelle valeur.
+    Version atomique Firestore.
+    """
+    check_db()
+    id_utilisateur = str(id_utilisateur or "").strip()
+    if not id_utilisateur:
+        return 0
+    try:
+        user_ref = db.collection("users").document(id_utilisateur)
+        snapshot = user_ref.get()
+        if not snapshot.exists:
+            print(
+                f"[BADGE INCREMENT] "
+                f"Utilisateur inexistant : {id_utilisateur}"
+            )
+            return 0
+        transaction = db.transaction()
+        nouveau = _increment_badge_transaction(transaction,user_ref)
+        print(
+            f"[BADGE INCREMENT] "
+            f"utilisateur={id_utilisateur} | "
+            f"nouveau={nouveau}"
+        )
+        return nouveau
+
+    except Exception as e:
+        print(
+            f"[BADGE INCREMENT ERROR] "
+            f"utilisateur={id_utilisateur} : {e}"
+        )
+        return 0
+
+@firestore.transactional
+def _decrement_badge_transaction(transaction, user_ref):
+    snapshot = user_ref.get(transaction=transaction)
+    if not snapshot.exists:
+        return 0
+    data = snapshot.to_dict() or {}
+    try:
+        actuel = int(data.get("notifications_non_lues", 0))
+    except (TypeError, ValueError):
+        actuel = 0
+    nouveau = max(0, actuel - 1)
+    transaction.update(user_ref,{"notifications_non_lues": nouveau})
+    return nouveau
+
+def decrementer_badge_utilisateur(id_utilisateur: str) -> int:
+    """
+    Décrémente de 1 le compteur notifications_non_lues.
+    Le compteur ne peut jamais être inférieur à 0.
+    Version atomique Firestore.
+    """
+    check_db()
+    id_utilisateur = str(id_utilisateur or "").strip()
+    if not id_utilisateur:
+        return 0
+    try:
+        user_ref = db.collection("users").document(id_utilisateur)
+        transaction = db.transaction()
+        nouveau = _decrement_badge_transaction(transaction,user_ref)
+        print(
+            f"[BADGE DECREMENT] "
+            f"utilisateur={id_utilisateur} | "
+            f"nouveau={nouveau}"
+        )
+        return nouveau
+    except Exception as e:
+        print(
+            f"[BADGE DECREMENT ERROR] "
+            f"utilisateur={id_utilisateur} : {e}"
+        )
+        return 0
+
+def mettre_badge_utilisateur_a_zero(id_utilisateur: str) -> bool:
+    """
+    Remet le compteur notifications_non_lues à zéro.
+    """
+    check_db()
+    id_utilisateur = str(id_utilisateur or "").strip()
+    if not id_utilisateur:
+        return False
+    try:
+        user_ref = db.collection("users").document(id_utilisateur)
+        user_ref.set({"notifications_non_lues": 0},merge=True)
+        print(
+            f"[BADGE] "
+            f"Compteur remis à 0 pour {id_utilisateur}"
+        )
+        return True
+    except Exception as e:
+        print(
+            f"[BADGE ZERO ERROR] "
+            f"utilisateur={id_utilisateur} : {e}"
+        )
+        return False
+
+def envoyer_notif_categorie_avec_badge(categorie: str,titre: str,corps: str,notif_type: str = "home",match_id: str = None,exclure_utilisateur: str = None,):
+    """Envoie une notification à tous les utilisateurs autorisés d'une catégorie."""
+    utilisateurs = recuperer_utilisateurs_fcm_categorie(categorie)
+    if not utilisateurs:
+        print(f"[FCM CATEGORIE] Aucun utilisateur destinataire pour {categorie}")
+        return False
+    norm = lambda s: str(s).strip().replace(" ", "_").lower() if s else None
+    id_exclusion = norm(exclure_utilisateur)
+    total_utilisateurs = total_tokens = total_notifications = total_exclus = 0
+    for utilisateur in utilisateurs:
+        id_utilisateur = str(utilisateur.get("id", "")).strip()
+        if not id_utilisateur:
+            continue
+        if id_exclusion and norm(id_utilisateur) == id_exclusion:
+            print(f"[FCM CATEGORIE] Utilisateur exclu : {id_utilisateur}")
+            total_exclus += 1
+            continue
+        badge_count = creer_notification_utilisateur(
+            id_utilisateur=id_utilisateur, titre=titre, corps=corps,
+            categorie=categorie, notif_type=notif_type, match_id=match_id
+        )
+        if badge_count <= 0:
+            print(f"[FCM CATEGORIE] Notification non envoyée pour {id_utilisateur}")
+            continue
+        total_utilisateurs += 1
+        total_notifications += 1
+        tokens = utilisateur.get("tokens", [])
+        if not isinstance(tokens, list):
+            tokens = []
+        total_tokens += sum(
+            1 for token in tokens
+            if envoyer_notif_push_token(
+                fcm_token=token, titre=titre, corps=corps,
+                categorie=categorie, notif_type=notif_type, badge_count=badge_count
+            )
+        )
+    print(f"[FCM CATEGORIE BADGE] categorie={categorie} | utilisateurs={total_utilisateurs} | exclus={total_exclus} | notifications={total_notifications} | tokens={total_tokens}")
+    return total_notifications > 0
+
+def creer_notification_utilisateur(id_utilisateur: str,titre: str,corps: str,categorie: str,notif_type: str = "home",match_id: str = None,):
+    """Crée une notification dans le compte Firestore d'un utilisateur et incrémente son compteur."""
+    check_db()
+    id_utilisateur = str(id_utilisateur or "").strip()
+    if not id_utilisateur:
+        print("[NOTIFICATION ERROR] ID utilisateur manquant.")
+        return 0
+    try:
+        user_ref = db.collection("users").document(id_utilisateur)
+        if not user_ref.get().exists:
+            print(f"[NOTIFICATION ERROR] Utilisateur inexistant : {id_utilisateur}")
+            return 0
+        notification_data = {
+            "titre": str(titre or ""),
+            "corps": str(corps or ""),
+            "categorie": str(categorie or ""),
+            "notif_type": str(notif_type or "home"),
+            "lue": False,
+            "date": datetime.now(timezone.utc),
+            **({"match_id": str(match_id)} if match_id is not None else {})
+        }
+        user_ref.collection("notifications").document(uuid.uuid4().hex).set(notification_data)
+        badge_count = incrementer_badge_utilisateur(id_utilisateur)
+        print(f"[NOTIFICATION] Créée pour {id_utilisateur} | categorie={categorie} | type={notif_type} | badge={badge_count}")
+        return badge_count
+    except Exception as e:
+        print(f"[NOTIFICATION ERROR] Impossible de créer la notification pour {id_utilisateur} : {e}")
+        return 0
+
+def envoyer_notif_utilisateur_avec_badge(id_utilisateur: str,titre: str,corps: str,categorie: str,notif_type: str = "home",match_id: str = None,exclure_utilisateur: str = None,):
+    """Envoie une notification à un utilisateur précis."""
+    check_db()
+    id_utilisateur = str(id_utilisateur or "").strip()
+    if not id_utilisateur:
+        print("[FCM UTILISATEUR] ID utilisateur manquant.")
+        return False
+    if exclure_utilisateur:
+        norm = lambda s: str(s).strip().replace(" ", "_").lower()
+        if norm(id_utilisateur) == norm(exclure_utilisateur):
+            print(f"[FCM UTILISATEUR] Notification ignorée : {id_utilisateur} est l'expéditeur.")
+            return False
+    try:
+        user_snapshot = db.collection("users").document(id_utilisateur).get()
+        if not user_snapshot.exists:
+            print(f"[FCM UTILISATEUR] Utilisateur inexistant : {id_utilisateur}")
+            return False
+        badge_count = creer_notification_utilisateur(
+            id_utilisateur=id_utilisateur, titre=titre, corps=corps,
+            categorie=categorie, notif_type=notif_type, match_id=match_id
+        )
+        if badge_count <= 0:
+            print(f"[FCM UTILISATEUR] Impossible de créer la notification pour {id_utilisateur}")
+            return False
+        fcm_tokens = list(dict.fromkeys(
+            str(t).strip() for t in (user_snapshot.to_dict() or {}).get("fcm_tokens", [])
+            if str(t).strip()
+        ))
+        if not fcm_tokens:
+            print(f"[FCM UTILISATEUR] Aucun token FCM pour {id_utilisateur}.")
+            return False
+        total_envoyes = sum(
+            1 for token in fcm_tokens
+            if envoyer_notif_push_token(
+                fcm_token=token, titre=titre, corps=corps,
+                categorie=categorie, notif_type=notif_type, badge_count=badge_count
+            )
+        )
+        print(f"[FCM UTILISATEUR BADGE] utilisateur={id_utilisateur} | badge={badge_count} | tokens={total_envoyes}/{len(fcm_tokens)}")
+        return total_envoyes > 0
+    except Exception as e:
+        print(f"[FCM UTILISATEUR ERROR] utilisateur={id_utilisateur} | {e}")
+        return False
+
+def envoyer_notif_convocation_utilisateur_avec_badge(id_utilisateur: str,titre: str,corps: str,categorie: str,match_id: str,exclure_utilisateur: str = None,):
+    """Envoie une notification de convocation à un utilisateur précis."""
+    check_db()
+    id_utilisateur = str(id_utilisateur or "").strip()
+    if not id_utilisateur:
+        print("[FCM CONVOCATION] ID utilisateur manquant.")
+        return False
+    if exclure_utilisateur:
+        norm = lambda s: str(s).strip().replace(" ", "_").lower()
+        if norm(id_utilisateur) == norm(exclure_utilisateur):
+            print(f"[FCM CONVOCATION] Notification ignorée : {id_utilisateur} est l'expéditeur.")
+            return False
+    try:
+        snapshot = db.collection("users").document(id_utilisateur).get()
+        if not snapshot.exists:
+            print(f"[FCM CONVOCATION] Utilisateur inexistant : {id_utilisateur}")
+            return False
+        badge_count = creer_notification_utilisateur(
+            id_utilisateur=id_utilisateur, titre=titre, corps=corps,
+            categorie=categorie, notif_type="convocation", match_id=match_id
+        )
+        if badge_count <= 0:
+            print(f"[FCM CONVOCATION] Impossible de créer la notification pour {id_utilisateur}")
+            return False
+        tokens = list(dict.fromkeys(str(t).strip() for t in (snapshot.to_dict() or {}).get("fcm_tokens", []) if str(t).strip()))
+        if not tokens:
+            print(f"[FCM CONVOCATION] Aucun token FCM pour {id_utilisateur} | badge={badge_count}")
+            return False
+        total_envoyes = 0
+        for token in tokens:
+            try:
+                if envoyer_notif_convocation_token(fcm_token=token, titre=titre, corps=corps, categorie=categorie, match_id=match_id, badge_count=badge_count):
+                    total_envoyes += 1
+            except Exception as e:
+                print(f"[FCM CONVOCATION TOKEN ERROR] utilisateur={id_utilisateur} | token={token[:12]}... | {e}")
+        print(f"[FCM CONVOCATION BADGE] utilisateur={id_utilisateur} | categorie={categorie} | match_id={match_id} | badge={badge_count} | tokens={total_envoyes}/{len(tokens)}")
+        return total_envoyes > 0
+    except Exception as e:
+        print(f"[FCM CONVOCATION ERROR] utilisateur={id_utilisateur} | {e}")
+        return False
+
+@app.get("/notifications/badge")
+def get_badge(nom_parent: Optional[str] = Header(None, alias="nom_parent")):
+    check_db()
+    if not nom_parent:
+        raise HTTPException(status_code=400, detail="Nom manquant")
+    id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
+    doc = db.collection("users").document(id_utilisateur).get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    data = doc.to_dict() or {}
+    return {"badge": int(data.get("notifications_non_lues", 0))}
+
+@app.post("/notifications/badge/reset")
+def reset_badge(nom_parent: Optional[str] = Header(None, alias="nom_parent")):
+    check_db()
+    if not nom_parent:
+        raise HTTPException(status_code=400, detail="Nom manquant")
+    id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
+    mettre_badge_utilisateur_a_zero(id_utilisateur)
+    return {"status": "success"}
+
+@app.post("/notifications/decrement")
+def decrement_notification(nom_parent: Optional[str] = Header(None, alias="nom_parent")):
+    check_db()
+    if not nom_parent:
+        raise HTTPException(status_code=400,detail="Utilisateur manquant")
+    id_utilisateur = (nom_parent.strip().replace(" ", "_").lower())
+    nouveau_badge = decrementer_badge_utilisateur(id_utilisateur)
+    return {
+        "status": "success",
+        "badge": nouveau_badge
+    }
+    
 ####################################################
 ####################################################
 # STATISTIQUES & HISTORIQUE DES PRESENCES
