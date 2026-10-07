@@ -1884,6 +1884,35 @@ def mettre_badge_utilisateur_a_zero(id_utilisateur: str) -> bool:
 
 def envoyer_notif_categorie_avec_badge(categorie: str,titre: str,corps: str,notif_type: str = "home",match_id: str = None,exclure_utilisateur: str = None,):
     """Envoie une notification à tous les utilisateurs autorisés d'une catégorie."""
+    categorie = str(categorie or "").strip()
+    if not categorie:
+        print("[FCM CATEGORIE] Catégorie vide.")
+        return False
+    # ============================================================
+    # TOURNOIVERCEL
+    # ============================================================
+    if categorie == "TournoiVercel":
+        try:
+            envoyer_notif_push(
+                topic="TournoiVercel",
+                titre=titre,
+                corps=corps,
+                notif_type=notif_type,
+                match_id=match_id,
+                sender=exclure_utilisateur
+            )
+            print(
+                "[FCM TOURNOIVERCEL] "
+                "Notification envoyée sur le topic global."
+            )
+            return True
+        except Exception as e:
+            print(f"[FCM TOURNOIVERCEL ERROR] {e}")
+            return False
+
+    # ============================================================
+    # AUTRES CATÉGORIES
+    # ============================================================
     utilisateurs = recuperer_utilisateurs_fcm_categorie(categorie)
     if not utilisateurs:
         print(f"[FCM CATEGORIE] Aucun utilisateur destinataire pour {categorie}")
