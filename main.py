@@ -1,6 +1,7 @@
 import json
 import os
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import List, Optional, Union, Dict, Any
 
 from google.cloud.firestore_v1 import Increment
@@ -1172,7 +1173,7 @@ def enregistrer_vote(
         is_coach = str(nom_identifiant_vote).upper().startswith("COACH_")
         
         # Génération de la date et heure actuelle au même format que le reste de votre appli
-        date_heure_actuelle = datetime.now().strftime("%d/%m/%Y à %H:%M")
+        date_heure_actuelle = datetime.now(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y à %H:%M")
 
         vote_updates = {
             f"votes.{nom_identifiant_vote}.dernier_modificateur": utilisateur_connecte,
