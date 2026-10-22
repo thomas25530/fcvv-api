@@ -57,8 +57,10 @@ def verifier_si_exclu(nom_parent: str, categorie: str) -> bool:
     """Vérifie si un utilisateur possède le statut EXCLU pour une catégorie donnée."""
     if not nom_parent or db is None:
         return True
-    id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
-    doc = db.collection("users").document(id_utilisateur).get()
+    id_utilisateur, doc = trouver_utilisateur(nom_parent)
+
+    if not doc:
+        return False
     if not doc.exists:
         return True
     roles = doc.to_dict().get("roles_par_categorie", {})
@@ -68,8 +70,10 @@ def verifier_si_autorise(nom_parent: str, categorie: str) -> bool:
     """Autorise uniquement les utilisateurs PARENT ou ADMIN."""
     if not nom_parent or db is None:
         return False
-    id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
-    doc = db.collection("users").document(id_utilisateur).get()
+    id_utilisateur, doc = trouver_utilisateur(nom_parent)
+
+    if not doc:
+        return False
     if not doc.exists:
         return False
     roles = doc.to_dict().get("roles_par_categorie", {})
@@ -82,8 +86,10 @@ def verifier_si_admin(nom_parent: str, categorie: str) -> bool:
     """Vérifie si l'utilisateur est ADMIN ou COACH pour la catégorie."""
     if not nom_parent or db is None:
         return False
-    id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
-    doc = db.collection("users").document(id_utilisateur).get()
+    id_utilisateur, doc = trouver_utilisateur(nom_parent)
+
+    if not doc:
+        return False
     if not doc.exists:
         return False
     roles = doc.to_dict().get("roles_par_categorie", {})
@@ -460,6 +466,24 @@ def enregistrer_fcm_token(user: dict):
         "tokens_count": len(tokens_existants)
     }
 
+def trouver_utilisateur(nom_complet: str):
+    if not nom_complet:
+        return None, None
+    nom_complet = nom_complet.strip()
+    # ordre normal
+    id1 = nom_complet.replace(" ", "_").lower()
+    doc1 = db.collection("users").document(id1).get()
+    if doc1.exists:
+        return id1, doc1
+    # ordre inversé
+    parties = nom_complet.split()
+    if len(parties) >= 2:
+        id2 = "_".join(reversed(parties)).lower()
+        doc2 = db.collection("users").document(id2).get()
+        if doc2.exists:
+            return id2, doc2
+    return None, None
+
 # 🆕 AJOUT : Récupération du rôle d'un utilisateur pour une catégorie donnée
 @app.get("/users")
 def get_users(
@@ -476,8 +500,7 @@ def get_users(
         raise HTTPException(status_code=400,detail="Catégorie manquante")
     try:
         # Récupération du rôle réel dans Firebase
-        id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
-        doc = db.collection("users").document(id_utilisateur).get()
+        id_utilisateur, doc = trouver_utilisateur(nom_parent)
         if not doc.exists:
             raise HTTPException(status_code=403,detail="Utilisateur inconnu")
         data_utilisateur = doc.to_dict()
@@ -2070,8 +2093,9 @@ def get_badge(nom_parent: Optional[str] = Header(None, alias="nom_parent")):
     check_db()
     if not nom_parent:
         raise HTTPException(status_code=400, detail="Nom manquant")
-    id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
-    doc = db.collection("users").document(id_utilisateur).get()
+    id_utilisateur, doc = trouver_utilisateur(nom_parent)
+    if not doc:
+        return False
     if not doc.exists:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable")
     data = doc.to_dict() or {}
@@ -2082,7 +2106,7 @@ def reset_badge(nom_parent: Optional[str] = Header(None, alias="nom_parent")):
     check_db()
     if not nom_parent:
         raise HTTPException(status_code=400, detail="Nom manquant")
-    id_utilisateur = nom_parent.strip().replace(" ", "_").lower()
+    id_utilisateur, doc = trouver_utilisateur(nom_parent)
     mettre_badge_utilisateur_a_zero(id_utilisateur)
     return {"status": "success"}
 
