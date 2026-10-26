@@ -622,7 +622,7 @@ def envoyer_notif_push(
         apns_config = messaging.APNSConfig(
             headers={"apns-priority": "10"},
             payload=messaging.APNSPayload(
-                aps=messaging.Aps(alert=messaging.ApsAlert(title=titre, body=corps), sound="default",badge=1)
+                aps=messaging.Aps(alert=messaging.ApsAlert(title=titre, body=corps), sound="default")
             ),
         )
         target_page = "home" if notif_type in ["manual", "home"] else "vestiaire"
