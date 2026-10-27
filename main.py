@@ -753,13 +753,24 @@ def envoyer_notif_push_token(
         # ---------------------------------------------------------
         # Configuration Android
         # ---------------------------------------------------------
+        
+        
+        #=======================================================================
+        # android_config = messaging.AndroidConfig(
+        #     priority="high",
+        #     notification=messaging.AndroidNotification(
+        #         icon="ic_notification",
+        #         channel_id="fcvv_high_priority_v2"
+        #     )
+        # )
+        #=======================================================================
+        
+        
         android_config = messaging.AndroidConfig(
-            priority="high",
-            notification=messaging.AndroidNotification(
-                icon="ic_notification",
-                channel_id="fcvv_high_priority_v2"
-            )
+            priority="high"
         )
+        
+        
         # ---------------------------------------------------------
         # Configuration APNS (iOS)
         # ---------------------------------------------------------
@@ -801,16 +812,30 @@ def envoyer_notif_push_token(
         #   conserve les informations nécessaires à l'application
         #   pour la redirection et le traitement.
         # ---------------------------------------------------------
+        
+        
+        #=======================================================================
+        # message = messaging.Message(
+        #     notification=messaging.Notification(
+        #         title=titre,
+        #         body=corps
+        #     ),
+        #     data=data_payload,
+        #     android=android_config,
+        #     apns=apns_config,
+        #     token=fcm_token
+        # )
+        #=======================================================================
+        
+        
         message = messaging.Message(
-            notification=messaging.Notification(
-                title=titre,
-                body=corps
-            ),
             data=data_payload,
             android=android_config,
             apns=apns_config,
             token=fcm_token
         )
+        
+        
         # ---------------------------------------------------------
         # Envoi FCM
         # ---------------------------------------------------------
