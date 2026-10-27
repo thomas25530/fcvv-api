@@ -170,14 +170,11 @@ def valider_utilisateur_via_email(token: str = Query(...)):
     # 🔔 NOTIFICATION CIBLÉE DU PARENT
     # ==========================================================
     nom_utilisateur = user_data.get("nom", id_utilisateur)
-
     titre_push = "FCVV - Accès validé"
-
     corps_push = (
         f"Votre demande d'accès à la catégorie "
         f"{categorie} a été validée."
     )
-
     envoyer_notif_utilisateur_avec_badge(
         id_utilisateur=id_utilisateur,
         titre=titre_push,
@@ -185,7 +182,6 @@ def valider_utilisateur_via_email(token: str = Query(...)):
         categorie=categorie,
         notif_type="validation",
     )
-
     return f"""
     <html>
         <body style="font-family: Arial; text-align: center; padding-top: 50px;">
@@ -492,15 +488,14 @@ def get_users(
 ):
     check_db()
     if not nom_parent:
-        raise HTTPException(
-            status_code=400,
-            detail="Identifiant de l'utilisateur manquant"
-        )
+        raise HTTPException(status_code=400,detail="Identifiant de l'utilisateur manquant")
     if not categorie:
         raise HTTPException(status_code=400,detail="Catégorie manquante")
     try:
         # Récupération du rôle réel dans Firebase
         id_utilisateur, doc = trouver_utilisateur(nom_parent)
+        if not doc:
+            return False
         if not doc.exists:
             raise HTTPException(status_code=403,detail="Utilisateur inconnu")
         data_utilisateur = doc.to_dict()
@@ -512,10 +507,7 @@ def get_users(
         )
         # SEULS ADMIN et PARENT peuvent voir les membres
         if role not in ("ADMIN", "PARENT"):
-            raise HTTPException(
-                status_code=403,
-                detail="Accès refusé pour ce rôle"
-            )
+            raise HTTPException(status_code=403,detail="Accès refusé pour ce rôle")
         # Récupération des utilisateurs
         query = db.collection("users")
         docs = query.stream()
@@ -544,7 +536,6 @@ def get_users(
 
 ##########################
 ######## GESTION NOTIFS & MODELS
-
 class Vote(BaseModel):
     id_sondage: str
     nom_parent: str
@@ -606,26 +597,121 @@ class ConvocationModel(BaseModel):
 class BatchConvocationModel(BaseModel):
     evenements: List[ConvocationModel]
 
-def envoyer_notif_push(
-    topic: str, 
-    titre: str, 
-    corps: str, 
-    notif_type: str = "home", 
-    match_id: str = None,
-    sender: str = None
-):
-    topic = topic.strip()
-    sender_clean = sender.strip().replace(" ", "_").lower() if sender else None
-
+def envoyer_notif_push(topic: str,titre: str, corps: str,notif_type: str = "home",match_id: str = None,sender: str = None):
+    topic = str(topic or "").strip()
+    if not topic:
+        print("[FCM ERROR] Topic manquant.")
+        return
+    titre = str(titre or "")
+    corps = str(corps or "")
+    notif_type = str(notif_type or "home")
+    # --------------------------------------------------
+    # 1. Enregistrer les notifications générales
+    # --------------------------------------------------
+    if topic == "TournoiVercel":
+        try:
+            check_db()
+            # Collection générale partagée
+            general_ref = (db.collection("users").document("notification_generale") )
+            general_ref.set( {"nom": "notification generale"},  merge=True)
+            notification_id = uuid.uuid4().hex
+            notification_data = {
+                "titre": titre,
+                "corps": corps,
+                "categorie": topic,
+                "notif_type": notif_type,
+                "lue": False,
+                "date": datetime.now(timezone.utc),
+                "source": "generale",
+                "source_id": f"generale:{notification_id}",
+                "badge": False,
+            }
+            if match_id is not None:
+                notification_data["match_id"] = str(match_id)
+            # Sauvegarde de la notification générale
+            (
+                general_ref.collection("notifications")
+                .document(notification_id)
+                .set(notification_data)
+            )
+            print(
+                "[NOTIFICATION GENERALE] Sauvegardée "
+                f"| id={notification_id}"
+            )
+            # --------------------------------------------------
+            # 2. Copier la notification chez chaque utilisateur
+            #    enregistré dans users/
+            # --------------------------------------------------
+            users_ref = db.collection("users")
+            batch = db.batch()
+            operations = 0
+            utilisateurs_cibles = 0
+            for user_doc in users_ref.stream():
+                user_id = user_doc.id
+                # Ce document est la collection générale,
+                # pas un véritable utilisateur.
+                if user_id == "notification_generale":
+                    continue
+                # Ne copier que chez les utilisateurs
+                # dont le document existe.
+                if not user_doc.exists:
+                    continue
+                # Utiliser le même ID source pour permettre
+                # la déduplication côté application.
+                copie_ref = (users_ref.document(user_id) .collection("notifications").document(f"generale_{notification_id}"))
+                copie_data = dict(notification_data)
+                copie_data["source"] = "generale"
+                copie_data["source_id"] = (f"generale:{notification_id}")
+                batch.set(copie_ref, copie_data)
+                operations += 1
+                utilisateurs_cibles += 1
+                # Limite prudente sous les 500 écritures
+                # autorisées par lot Firestore.
+                if operations >= 450:
+                    batch.commit()
+                    batch = db.batch()
+                    operations = 0
+            if operations:
+                batch.commit()
+            print(
+                "[NOTIFICATION GENERALE] Copies enregistrées "
+                f"pour {utilisateurs_cibles} utilisateurs."
+            )
+        except Exception as e:
+            # Une erreur Firestore ne doit pas empêcher
+            # la tentative d'envoi du push.
+            print(
+                "[NOTIFICATION GENERALE ERROR] "
+                f"Enregistrement Firestore impossible : {e}"
+            )
+    # --------------------------------------------------
+    # 3. Envoyer le push FCM au topic
+    # --------------------------------------------------
+    sender_clean = (
+        sender.strip().replace(" ", "_").lower()
+        if sender else None
+    )
     try:
         android_config = messaging.AndroidConfig(priority="high")
+        # Aucun aps.badge ici : le badge iOS est réservé
+        # aux notifications personnelles importantes.
         apns_config = messaging.APNSConfig(
             headers={"apns-priority": "10"},
             payload=messaging.APNSPayload(
-                aps=messaging.Aps(alert=messaging.ApsAlert(title=titre, body=corps), sound="default")
-            ),
+                aps=messaging.Aps(
+                    alert=messaging.ApsAlert(
+                        title=titre,
+                        body=corps
+                    ),
+                    sound="default"
+                )
+            )
         )
-        target_page = "home" if notif_type in ["manual", "home"] else "vestiaire"
+        target_page = (
+            "home"
+            if notif_type in ("manual", "home")
+            else "vestiaire"
+        )
         data_payload = {
             "title": titre,
             "body": corps,
@@ -633,24 +719,21 @@ def envoyer_notif_push(
             "open_page": target_page,
             "categorie": topic,
             "notif_type": notif_type,
-            "sender": sender or ""
+            "sender": sender or "",
         }
         if match_id:
-            data_payload["match_id"] = match_id
-        # 🔒 Filtre FCM : Diffusion au topic sauf aux membres avec le statut EXCLU
-        condition_fcm = f"'{topic}' in topics && !('{topic}_exclure' in topics)"
-        if sender_clean:
-            condition_fcm += f" && !('{topic}_exclure_{sender_clean}' in topics)"
-        message = messaging.Message(
-            data=data_payload,
-            android=android_config,
-            apns=apns_config,
-            condition=condition_fcm,
+            data_payload["match_id"] = str(match_id)
+        condition_fcm = (
+            f"'{topic}' in topics "
+            f"&& !('{topic}_exclure' in topics)"
         )
+        if sender_clean:
+            condition_fcm += ( f" && !('{topic}_exclure_{sender_clean}' in topics)" )
+        message = messaging.Message(data=data_payload, android=android_config,apns=apns_config,condition=condition_fcm, )
         response = messaging.send(message)
-        print(f"[FCM API] envoye avec succes : {response}")
+        print(f"[FCM API] Envoyé avec succès : {response}")
     except Exception as e:
-        print(f"[FCM ERROR] {e}")
+        print(f"[FCM ERROR] Envoi impossible : {e}")
 
 def envoyer_notif_push_token(
     fcm_token: str,
@@ -666,7 +749,6 @@ def envoyer_notif_push_token(
             "notification non envoyee."
         )
         return False
-
     try:
         # ---------------------------------------------------------
         # Configuration Android
@@ -688,10 +770,8 @@ def envoyer_notif_push_token(
             ),
             "sound": "default",
         }
-
         if badge_count is not None:
             aps_kwargs["badge"] = max(0, int(badge_count))
-
         apns_config = messaging.APNSConfig(
             headers={
                 "apns-priority": "10"
@@ -731,27 +811,22 @@ def envoyer_notif_push_token(
             apns=apns_config,
             token=fcm_token
         )
-
         # ---------------------------------------------------------
         # Envoi FCM
         # ---------------------------------------------------------
         response = messaging.send(message)
-
         print(
             f"[FCM TOKEN] Notification envoyee | "
             f"token={fcm_token[:30]}... | "
             f"message_id={response}"
         )
-
         return True
-
     except Exception as e:
         print(
             f"[FCM TOKEN ERROR] "
             f"Impossible d'envoyer la notification : {e}"
         )
         return False
-
 # ============================================================
 # FCM - NOTIFICATION CIBLEE CONVOCATION MATCH
 # ============================================================
@@ -769,7 +844,6 @@ def envoyer_notif_push_token(
 # Elle ajoute simplement match_id dans le payload data.
 #
 # ============================================================
-
 def envoyer_notif_convocation_token(fcm_token: str,titre: str,corps: str,categorie: str,match_id: str,badge_count: int = None,):
     """
     Envoie une notification FCM de convocation sur un token précis.
@@ -791,16 +865,9 @@ def envoyer_notif_convocation_token(fcm_token: str,titre: str,corps: str,categor
         # ----------------------------------------------------
         # Configuration APNS (iOS)
         # ----------------------------------------------------
-        aps_kwargs = {
-            "sound": "default",
-        }
-
+        aps_kwargs = {"sound": "default",}
         if badge_count is not None:
-            aps_kwargs["badge"] = max(
-                0,
-                int(badge_count)
-            )
-
+            aps_kwargs["badge"] = max(0,int(badge_count))
         apns_config = messaging.APNSConfig(
             headers={
                 "apns-priority": "10"
@@ -916,13 +983,8 @@ def verifier_token_admin(x_admin_token: Optional[str]) -> bool:
     if not x_admin_token:
         print("[ADMIN AUTH] Aucun X-Admin-Token recu.")
         return False
-    hash_recu = hashlib.sha256(
-        x_admin_token.encode("utf-8")
-    ).hexdigest()
-    return hmac.compare_digest(
-        hash_recu,
-        ADMIN_API_TOKEN_SHA256
-    )
+    hash_recu = hashlib.sha256(x_admin_token.encode("utf-8")).hexdigest()
+    return hmac.compare_digest(hash_recu,ADMIN_API_TOKEN_SHA256)
 
 @app.post("/admin/notifier/{categorie}")
 def envoyer_notification_admin(
@@ -935,10 +997,7 @@ def envoyer_notification_admin(
 ):
     check_db()
     if not verifier_token_admin(x_admin_token):
-        raise HTTPException(
-            status_code=403,
-            detail="Accès admin refusé"
-        )
+        raise HTTPException(status_code=403,detail="Accès admin refusé")
     try:
         envoyer_notif_categorie_avec_badge(
             categorie=categorie,
@@ -952,10 +1011,7 @@ def envoyer_notification_admin(
         }
     except Exception as e:
         print(f"[ADMIN NOTIF ERROR] {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+        raise HTTPException(status_code=500,detail=str(e))
 
 @app.get("/chat/{categorie}")
 def get_messages(
@@ -1116,7 +1172,6 @@ def delete_echange_message(
     except Exception as e:
         print(f"[ERREUR ECHANGE DELETE] {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    
 
 @app.delete("/chat/{categorie}/{message_id}")
 def delete_chat_message(
@@ -1149,7 +1204,6 @@ def delete_chat_message(
 
 ##########################
 ######## SONDAGES & VOTES
-
 @app.get("/sondages/{categorie}")
 def get_sondages_par_categorie(
     categorie: str, nom_parent: Optional[str] = Header(None, alias="nom_parent")
@@ -1173,14 +1227,9 @@ def enregistrer_vote(
     check_db()
     utilisateur_connecte = (nom_parent_header or vote.nom_parent or "").strip()
     if not utilisateur_connecte:
-        raise HTTPException(
-            status_code=400, detail="Identifiant de l'utilisateur manquant"
-        )
+        raise HTTPException(status_code=400, detail="Identifiant de l'utilisateur manquant")
     if not verifier_si_autorise(utilisateur_connecte, categorie):
-        raise HTTPException(
-            status_code=403,
-            detail="Action interdite : accès non validé"
-        )
+        raise HTTPException(status_code=403, detail="Action interdite : accès non validé" )
     try:
         nom_identifiant_vote = (vote.nom_joueur_concerne or "").strip()
         if not nom_identifiant_vote:
@@ -1194,10 +1243,8 @@ def enregistrer_vote(
                 joueurs_lies[0] if joueurs_lies else utilisateur_connecte
             )
         is_coach = str(nom_identifiant_vote).upper().startswith("COACH_")
-        
         # Génération de la date et heure actuelle au même format que le reste de votre appli
         date_heure_actuelle = datetime.now(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y à %H:%M")
-
         vote_updates = {
             f"votes.{nom_identifiant_vote}.dernier_modificateur": utilisateur_connecte,
             f"votes.{nom_identifiant_vote}.est_coach": is_coach,
@@ -1213,7 +1260,6 @@ def enregistrer_vote(
             vote_updates[f"votes.{nom_identifiant_vote}.choix_multiple"] = vote.choix_multiple
         if vote.nombre_de_places is not None:
             vote_updates[f"votes.{nom_identifiant_vote}.nombre_de_places"] = vote.nombre_de_places
-            
         doc_ref = db.collection(f"convocations_{categorie}").document(vote.id_sondage)
         doc_ref.update(vote_updates)
         return {
@@ -1328,15 +1374,9 @@ def get_user_role(
     # Accepte soit ?nom=..., soit le header nom_parent
     utilisateur = nom or nom_parent
     if not utilisateur:
-        raise HTTPException(
-            status_code=400,
-            detail="Identifiant de l'utilisateur manquant"
-        )
+        raise HTTPException(status_code=400,detail="Identifiant de l'utilisateur manquant" )
     if not categorie:
-        raise HTTPException(
-            status_code=400,
-            detail="Catégorie manquante"
-        )
+        raise HTTPException(status_code=400,detail="Catégorie manquante")
     try:
         id_utilisateur = (
             utilisateur.strip()
@@ -1345,10 +1385,7 @@ def get_user_role(
         )
         doc = db.collection("users").document(id_utilisateur).get()
         if not doc.exists:
-            raise HTTPException(
-                status_code=404,
-                detail="Utilisateur inconnu"
-            )
+            raise HTTPException(status_code=404,detail="Utilisateur inconnu" )
         data = doc.to_dict()
         roles = data.get("roles_par_categorie", {})
         role = str(roles.get(categorie, "EXCLU")).strip().upper()
@@ -1788,6 +1825,218 @@ def get_one_convocation(
         raise HTTPException(status_code=404, detail="Match non trouvé")
     return doc.to_dict()
 
+@app.get("/notifications/synchroniser")
+def synchroniser_notifications(
+    nom_parent: Optional[str] = Header(
+        None,
+        alias="nom_parent"
+    )
+):
+    check_db()
+    nom = str(nom_parent or "").strip()
+    if not nom:
+        raise HTTPException(status_code=400, detail="Nom utilisateur manquant")
+    # Même convention d'identifiant que /users/register
+    id_utilisateur = nom.replace(" ", "_").lower()
+    try:
+        notifications = []
+        users_ref = db.collection("users")
+        user_ref = users_ref.document(id_utilisateur)
+        utilisateur_enregistre = user_ref.get().exists
+        # --------------------------------------------------
+        # 1. Choisir les sources
+        # --------------------------------------------------
+        if utilisateur_enregistre:
+            # Les notifications personnelles et les copies
+            # générales doivent être dans cette sous-collection.
+            sources = [("personnelle", user_ref)]
+            date_vidage = None
+        else:
+            # Utilisateur non enregistré : notifications générales
+            # partagées, filtrées avec son marqueur individuel.
+            general_ref = users_ref.document("notification_generale")
+            sources = [("generale", general_ref)]
+
+            marqueur_ref = (
+                db.collection("notifications_vidage")
+                .document(id_utilisateur)
+            )
+            marqueur = marqueur_ref.get()
+            date_vidage = None
+            if marqueur.exists:
+                date_vidage = (
+                    marqueur.to_dict() or {}
+                ).get("date_vidage")
+                # Normaliser la date du marqueur en datetime UTC.
+                if isinstance(date_vidage, str):
+                    try:
+                        date_vidage = datetime.fromisoformat(
+                            date_vidage.replace("Z", "+00:00")
+                        )
+                    except ValueError:
+                        date_vidage = None
+                if isinstance(date_vidage, datetime):
+                    if date_vidage.tzinfo is None:
+                        date_vidage = date_vidage.replace(
+                            tzinfo=timezone.utc
+                        )
+                    else:
+                        date_vidage = date_vidage.astimezone(
+                            timezone.utc
+                        )
+                else:
+                    date_vidage = None
+        # --------------------------------------------------
+        # 2. Charger les notifications
+        # --------------------------------------------------
+        for source_defaut, source_user_ref in sources:
+            if not source_user_ref.get().exists:
+                continue
+            docs = source_user_ref.collection("notifications").stream()
+            for doc in docs:
+                data = doc.to_dict() or {}
+                date_originale = data.get("date")
+                # Pour les utilisateurs non enregistrés,
+                # masquer les notifications générales antérieures
+                # ou égales au dernier vidage.
+                if not utilisateur_enregistre and date_vidage:
+                    if not isinstance(date_originale, datetime):
+                        # Une date absente ou invalide ne doit pas
+                        # faire réapparaître une ancienne notification.
+                        continue
+                    date_comparable = date_originale
+                    if date_comparable.tzinfo is None:
+                        date_comparable = date_comparable.replace(
+                            tzinfo=timezone.utc
+                        )
+                    else:
+                        date_comparable = date_comparable.astimezone(
+                            timezone.utc
+                        )
+                    if date_comparable <= date_vidage:
+                        continue
+                if isinstance(date_originale, datetime):
+                    date_iso = date_originale.isoformat()
+                    date_tri = date_originale
+                    if date_tri.tzinfo is None:
+                        date_tri = date_tri.replace(
+                            tzinfo=timezone.utc
+                        )
+                    else:
+                        date_tri = date_tri.astimezone(timezone.utc)
+                else:
+                    date_iso = (
+                        str(date_originale)
+                        if date_originale is not None
+                        else None
+                    )
+                    date_tri = None
+                source = str(data.get("source") or source_defaut)
+                source_id = str(
+                    data.get("source_id") or f"{source}:{doc.id}"
+                )
+                notifications.append({
+                    "source_id": source_id,
+                    "source": source,
+                    "titre": str(data.get("titre") or ""),
+                    "corps": str(data.get("corps") or ""),
+                    "categorie": str(data.get("categorie") or ""),
+                    "notif_type": str(
+                        data.get("notif_type") or "home"
+                    ),
+                    "match_id": (
+                        str(data["match_id"])
+                        if data.get("match_id") is not None
+                        else None
+                    ),
+                    "date": date_iso,
+                    "lue": bool(data.get("lue", False)),
+                    "_date_tri": date_tri
+                })
+        # Plus récentes en premier ; dates absentes en dernier.
+        notifications.sort(
+            key=lambda n: (
+                n["_date_tri"] is not None,
+                n["_date_tri"] or datetime.min.replace(
+                    tzinfo=timezone.utc
+                )
+            ),
+            reverse=True
+        )
+        # Ne pas exposer le champ interne utilisé pour le tri.
+        for notification in notifications:
+            notification.pop("_date_tri", None)
+        return {"notifications": notifications}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[NOTIFICATIONS API] Erreur de synchronisation : {e}")
+        raise HTTPException(status_code=500,detail="Impossible de synchroniser les notifications")
+
+@app.delete("/notifications/vider")
+def vider_notifications_utilisateur(
+    nom_parent: Optional[str] = Header(
+        None,
+        alias="nom_parent"
+    )
+):
+    check_db()
+    nom = str(nom_parent or "").strip()
+    if not nom:
+        raise HTTPException( status_code=400, detail="Nom utilisateur manquant" )
+    id_utilisateur = nom.replace(" ", "_").lower()
+    try:
+        users_ref = db.collection("users")
+        user_ref = users_ref.document(id_utilisateur)
+        utilisateur_enregistre = user_ref.get().exists
+        if utilisateur_enregistre:
+            # Supprimer uniquement les notifications de cet utilisateur.
+            notifications_ref = user_ref.collection("notifications")
+            total_supprime = 0
+            while True:
+                docs = list(notifications_ref.limit(400).stream())
+                if not docs:
+                    break
+                batch = db.batch()
+                for doc in docs:
+                    batch.delete(doc.reference)
+                batch.commit()
+                total_supprime += len(docs)
+            # Le badge concerne les notifications personnelles importantes.
+            user_ref.set(
+                {"notifications_non_lues": 0},
+                merge=True
+            )
+            return {
+                "success": True,
+                "message": "Notifications personnelles supprimées",
+                "notifications_supprimees": total_supprime,
+                "badge": 0,
+                "generales_supprimees": False
+            }
+        # Utilisateur non enregistré :
+        # ne pas supprimer la collection générale partagée.
+        db.collection("notifications_vidage").document(
+            id_utilisateur
+        ).set(
+            {
+                "date_vidage": datetime.now(timezone.utc),
+            },
+            merge=True
+        )
+        return {
+            "success": True,
+            "message": "Notifications générales masquées pour cet utilisateur",
+            "notifications_supprimees": 0,
+            "badge": 0,
+            "generales_supprimees": False
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[NOTIFICATIONS API] Erreur lors du vidage : {e}")
+        raise HTTPException(status_code=500,detail="Impossible de vider les notifications")
 # ============================================================
 # ============================================================
 # AJOUT METHODE POUR INCREMENTER DECREMENTER BADGE IOS
