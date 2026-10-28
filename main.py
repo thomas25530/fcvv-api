@@ -742,6 +742,7 @@ def envoyer_notif_push_token(
     categorie: str,
     notif_type: str = "validation",
     badge_count: int = None,
+    source_id: str = None,
 ):
     if not fcm_token:
         print(
@@ -799,7 +800,8 @@ def envoyer_notif_push_token(
             "body": corps,
             "categorie": categorie,
             "notif_type": notif_type,
-            "open_page": "vestiaire"
+            "open_page": "vestiaire",
+            "source_id": source_id,
         }
         # ---------------------------------------------------------
         # Message FCM
@@ -2226,7 +2228,7 @@ def envoyer_notif_categorie_avec_badge(categorie: str,titre: str,corps: str,noti
             print(f"[FCM CATEGORIE] Utilisateur exclu : {id_utilisateur}")
             total_exclus += 1
             continue
-        badge_count = creer_notification_utilisateur(
+        badge_count, source_id = creer_notification_utilisateur(
             id_utilisateur=id_utilisateur, titre=titre, corps=corps,
             categorie=categorie, notif_type=notif_type, match_id=match_id
         )
@@ -2242,7 +2244,7 @@ def envoyer_notif_categorie_avec_badge(categorie: str,titre: str,corps: str,noti
             1 for token in tokens
             if envoyer_notif_push_token(
                 fcm_token=token, titre=titre, corps=corps,
-                categorie=categorie, notif_type=notif_type, badge_count=badge_count
+                categorie=categorie, notif_type=notif_type, badge_count=badge_count,source_id=source_id,
             )
         )
     print(f"[FCM CATEGORIE BADGE] categorie={categorie} | utilisateurs={total_utilisateurs} | exclus={total_exclus} | notifications={total_notifications} | tokens={total_tokens}")
@@ -2260,6 +2262,7 @@ def creer_notification_utilisateur(id_utilisateur: str,titre: str,corps: str,cat
         if not user_ref.get().exists:
             print(f"[NOTIFICATION ERROR] Utilisateur inexistant : {id_utilisateur}")
             return 0
+        source_id = uuid.uuid4().hex
         notification_data = {
             "titre": str(titre or ""),
             "corps": str(corps or ""),
@@ -2267,15 +2270,16 @@ def creer_notification_utilisateur(id_utilisateur: str,titre: str,corps: str,cat
             "notif_type": str(notif_type or "home"),
             "lue": False,
             "date": datetime.now(timezone.utc),
-            **({"match_id": str(match_id)} if match_id is not None else {})
+            **({"match_id": str(match_id)} if match_id is not None else {}),
+            "source_id": source_id
         }
-        user_ref.collection("notifications").document(uuid.uuid4().hex).set(notification_data)
+        user_ref.collection("notifications").document(source_id).set(notification_data)
         badge_count = incrementer_badge_utilisateur(id_utilisateur)
         print(f"[NOTIFICATION] Créée pour {id_utilisateur} | categorie={categorie} | type={notif_type} | badge={badge_count}")
-        return badge_count
+        return badge_count, source_id
     except Exception as e:
         print(f"[NOTIFICATION ERROR] Impossible de créer la notification pour {id_utilisateur} : {e}")
-        return 0
+        return 0, None
 
 def envoyer_notif_utilisateur_avec_badge(id_utilisateur: str,titre: str,corps: str,categorie: str,notif_type: str = "home",match_id: str = None,exclure_utilisateur: str = None,):
     """Envoie une notification à un utilisateur précis."""
@@ -2294,7 +2298,7 @@ def envoyer_notif_utilisateur_avec_badge(id_utilisateur: str,titre: str,corps: s
         if not user_snapshot.exists:
             print(f"[FCM UTILISATEUR] Utilisateur inexistant : {id_utilisateur}")
             return False
-        badge_count = creer_notification_utilisateur(
+        badge_count, source_id = creer_notification_utilisateur(
             id_utilisateur=id_utilisateur, titre=titre, corps=corps,
             categorie=categorie, notif_type=notif_type, match_id=match_id
         )
@@ -2312,7 +2316,7 @@ def envoyer_notif_utilisateur_avec_badge(id_utilisateur: str,titre: str,corps: s
             1 for token in fcm_tokens
             if envoyer_notif_push_token(
                 fcm_token=token, titre=titre, corps=corps,
-                categorie=categorie, notif_type=notif_type, badge_count=badge_count
+                categorie=categorie, notif_type=notif_type, badge_count=badge_count,source_id=source_id,
             )
         )
         print(f"[FCM UTILISATEUR BADGE] utilisateur={id_utilisateur} | badge={badge_count} | tokens={total_envoyes}/{len(fcm_tokens)}")
@@ -2338,7 +2342,7 @@ def envoyer_notif_convocation_utilisateur_avec_badge(id_utilisateur: str,titre: 
         if not snapshot.exists:
             print(f"[FCM CONVOCATION] Utilisateur inexistant : {id_utilisateur}")
             return False
-        badge_count = creer_notification_utilisateur(
+        badge_count, source_id = creer_notification_utilisateur(
             id_utilisateur=id_utilisateur, titre=titre, corps=corps,
             categorie=categorie, notif_type="convocation", match_id=match_id
         )
