@@ -818,7 +818,7 @@ def envoyer_notif_push_token(
         apns_config = messaging.APNSConfig(
             headers={
                 "apns-priority": "10",
-				"apns-collapse-id": ios_identifier,
+                "apns-collapse-id": ios_identifier,
             },
             payload=messaging.APNSPayload(
                 aps=messaging.Aps(**aps_kwargs)
@@ -913,7 +913,7 @@ def envoyer_notif_convocation_token(fcm_token: str,titre: str,corps: str,categor
         print("[FCM CONVOCATION] Aucun token FCM fourni.")
         return False
     try:
-	    # ----------------------------------------------------
+        # ----------------------------------------------------
         # IDENTIFIANT UNIQUE
         # ----------------------------------------------------
         source_id = str(source_id).strip() if source_id else None
@@ -944,7 +944,7 @@ def envoyer_notif_convocation_token(fcm_token: str,titre: str,corps: str,categor
         apns_config = messaging.APNSConfig(
             headers={
                 "apns-priority": "10",
-				"apns-collapse-id": ios_identifier,
+                "apns-collapse-id": ios_identifier,
             },
             payload=messaging.APNSPayload(
                 aps=messaging.Aps(
@@ -2426,9 +2426,9 @@ def envoyer_notif_convocation_utilisateur_avec_badge(id_utilisateur: str,titre: 
             id_utilisateur=id_utilisateur, titre=titre, corps=corps,
             categorie=categorie, notif_type="convocation", match_id=match_id
         )
-		source_id = str(source_id or "").strip()
-		if not source_id:
-		    print(
+        source_id = str(source_id or "").strip()
+        if not source_id:
+            print(
                 f"[FCM CONVOCATION] source_id manquant "
                 f"pour {id_utilisateur}."
             )
