@@ -597,7 +597,7 @@ class ConvocationModel(BaseModel):
 class BatchConvocationModel(BaseModel):
     evenements: List[ConvocationModel]
 
-def envoyer_notif_push(topic: str,titre: str, corps: str,notif_type: str = "home",match_id: str = None,sender: str = None):
+def envoyer_notif_push(topic: str,titre: str,corps: str,notif_type: str = "home",match_id: str = None,sender: str = None):
     topic = str(topic or "").strip()
     if not topic:
         print("[FCM ERROR] Topic manquant.")
@@ -605,16 +605,22 @@ def envoyer_notif_push(topic: str,titre: str, corps: str,notif_type: str = "home
     titre = str(titre or "")
     corps = str(corps or "")
     notif_type = str(notif_type or "home")
+    # Identifiant unique de la notification
+    notification_id = uuid.uuid4().hex
+    source_id = f"generale:{notification_id}" if topic == "TournoiVercel" else f"topic:{topic}:{notification_id}"
+    if len(source_id.encode("utf-8")) > 64:
+        print("[FCM ERROR] source_id dépasse la limite APNs de 64 octets.")
+        return
     # --------------------------------------------------
     # 1. Enregistrer les notifications générales
     # --------------------------------------------------
     if topic == "TournoiVercel":
         try:
             check_db()
-            # Collection générale partagée
-            general_ref = (db.collection("users").document("notification_generale") )
-            general_ref.set( {"nom": "notification generale"},  merge=True)
-            notification_id = uuid.uuid4().hex
+                                             
+            general_ref = db.collection("users").document("notification_generale")
+            general_ref.set({"nom": "notification generale"},merge=True)
+                                              
             notification_data = {
                 "titre": titre,
                 "corps": corps,
@@ -623,7 +629,7 @@ def envoyer_notif_push(topic: str,titre: str, corps: str,notif_type: str = "home
                 "lue": False,
                 "date": datetime.now(timezone.utc),
                 "source": "generale",
-                "source_id": f"generale:{notification_id}",
+                "source_id": source_id,
                 "badge": False,
             }
             if match_id is not None:
@@ -640,7 +646,7 @@ def envoyer_notif_push(topic: str,titre: str, corps: str,notif_type: str = "home
             )
             # --------------------------------------------------
             # 2. Copier la notification chez chaque utilisateur
-            #    enregistré dans users/
+                                        
             # --------------------------------------------------
             users_ref = db.collection("users")
             batch = db.batch()
@@ -648,25 +654,27 @@ def envoyer_notif_push(topic: str,titre: str, corps: str,notif_type: str = "home
             utilisateurs_cibles = 0
             for user_doc in users_ref.stream():
                 user_id = user_doc.id
-                # Ce document est la collection générale,
-                # pas un véritable utilisateur.
+                                                           
+                                                
                 if user_id == "notification_generale":
                     continue
-                # Ne copier que chez les utilisateurs
-                # dont le document existe.
+                                                     
+                                          
                 if not user_doc.exists:
                     continue
-                # Utiliser le même ID source pour permettre
-                # la déduplication côté application.
-                copie_ref = (users_ref.document(user_id) .collection("notifications").document(f"generale_{notification_id}"))
+                copie_ref = (
+                    users_ref.document(user_id)
+                    .collection("notifications")
+                    .document(f"generale_{notification_id}")
+                )
                 copie_data = dict(notification_data)
                 copie_data["source"] = "generale"
-                copie_data["source_id"] = (f"generale:{notification_id}")
+                copie_data["source_id"] = source_id
                 batch.set(copie_ref, copie_data)
                 operations += 1
                 utilisateurs_cibles += 1
-                # Limite prudente sous les 500 écritures
-                # autorisées par lot Firestore.
+                                                         
+                                                
                 if operations >= 450:
                     batch.commit()
                     batch = db.batch()
@@ -678,8 +686,8 @@ def envoyer_notif_push(topic: str,titre: str, corps: str,notif_type: str = "home
                 f"pour {utilisateurs_cibles} utilisateurs."
             )
         except Exception as e:
-            # Une erreur Firestore ne doit pas empêcher
-            # la tentative d'envoi du push.
+                                                        
+                                           
             print(
                 "[NOTIFICATION GENERALE ERROR] "
                 f"Enregistrement Firestore impossible : {e}"
@@ -693,10 +701,14 @@ def envoyer_notif_push(topic: str,titre: str, corps: str,notif_type: str = "home
     )
     try:
         android_config = messaging.AndroidConfig(priority="high")
+
         # Aucun aps.badge ici : le badge iOS est réservé
         # aux notifications personnelles importantes.
         apns_config = messaging.APNSConfig(
-            headers={"apns-priority": "10"},
+            headers={
+                "apns-priority": "10",
+                "apns-collapse-id": source_id,
+            },
             payload=messaging.APNSPayload(
                 aps=messaging.Aps(
                     alert=messaging.ApsAlert(
@@ -720,6 +732,7 @@ def envoyer_notif_push(topic: str,titre: str, corps: str,notif_type: str = "home
             "categorie": topic,
             "notif_type": notif_type,
             "sender": sender or "",
+            "source_id": source_id,
         }
         if match_id:
             data_payload["match_id"] = str(match_id)
@@ -728,10 +741,13 @@ def envoyer_notif_push(topic: str,titre: str, corps: str,notif_type: str = "home
             f"&& !('{topic}_exclure' in topics)"
         )
         if sender_clean:
-            condition_fcm += ( f" && !('{topic}_exclure_{sender_clean}' in topics)" )
-        message = messaging.Message(data=data_payload, android=android_config,apns=apns_config,condition=condition_fcm, )
+            condition_fcm += (f" && !('{topic}_exclure_{sender_clean}' in topics)")
+        message = messaging.Message(data=data_payload,android=android_config,apns=apns_config,condition=condition_fcm,)
         response = messaging.send(message)
-        print(f"[FCM API] Envoyé avec succès : {response}")
+        print(
+            f"[FCM API] Envoyé avec succès : {response} "
+            f"| source_id={source_id}"
+        )
     except Exception as e:
         print(f"[FCM ERROR] Envoi impossible : {e}")
 
@@ -751,6 +767,21 @@ def envoyer_notif_push_token(
         )
         return False
     try:
+	    source_id = str(source_id).strip() if source_id else None
+		if not source_id:
+            print(
+                "[FCM TOKEN] source_id manquant -> "
+                "notification non envoyee."
+            )
+            return False
+
+        ios_identifier = source_id
+
+        if len(ios_identifier.encode("utf-8")) > 64:
+            print(
+                "[FCM TOKEN] ios_identifier dépasse 64 octets."
+            )
+            return False
         # ---------------------------------------------------------
         # Configuration Android
         # ---------------------------------------------------------
@@ -786,7 +817,8 @@ def envoyer_notif_push_token(
             aps_kwargs["badge"] = max(0, int(badge_count))
         apns_config = messaging.APNSConfig(
             headers={
-                "apns-priority": "10"
+                "apns-priority": "10",
+				"apns-collapse-id": ios_identifier,
             },
             payload=messaging.APNSPayload(
                 aps=messaging.Aps(**aps_kwargs)
@@ -871,7 +903,7 @@ def envoyer_notif_push_token(
 # Elle ajoute simplement match_id dans le payload data.
 #
 # ============================================================
-def envoyer_notif_convocation_token(fcm_token: str,titre: str,corps: str,categorie: str,match_id: str,badge_count: int = None,):
+def envoyer_notif_convocation_token(fcm_token: str,titre: str,corps: str,categorie: str,match_id: str,source_id: str,badge_count: int = None,):
     """
     Envoie une notification FCM de convocation sur un token précis.
     Fonction indépendante de envoyer_notif_push_token().
@@ -881,10 +913,24 @@ def envoyer_notif_convocation_token(fcm_token: str,titre: str,corps: str,categor
         print("[FCM CONVOCATION] Aucun token FCM fourni.")
         return False
     try:
+	    # ----------------------------------------------------
+        # IDENTIFIANT UNIQUE
+        # ----------------------------------------------------
+        source_id = str(source_id).strip() if source_id else None
+
+        if not source_id:
+            print("[FCM CONVOCATION] source_id manquant.")
+            return False
+
+        ios_identifier = source_id
+
+        if len(ios_identifier.encode("utf-8")) > 64:
+            print("[FCM CONVOCATION] ios_identifier dépasse 64 octets.")
+            return False
         # ----------------------------------------------------
         # Payload data
         # ----------------------------------------------------
-        data_payload = {"title": titre,"body": corps,"categorie": categorie,"notif_type": "convocation","open_page": "vestiaire","match_id": str(match_id),}
+        data_payload = {"title": titre,"body": corps,"categorie": categorie,"notif_type": "convocation","open_page": "vestiaire","match_id": str(match_id),"source_id": source_id,}
         # ----------------------------------------------------
         # Configuration Android
         # ----------------------------------------------------
@@ -897,7 +943,8 @@ def envoyer_notif_convocation_token(fcm_token: str,titre: str,corps: str,categor
             aps_kwargs["badge"] = max(0,int(badge_count))
         apns_config = messaging.APNSConfig(
             headers={
-                "apns-priority": "10"
+                "apns-priority": "10",
+				"apns-collapse-id": ios_identifier,
             },
             payload=messaging.APNSPayload(
                 aps=messaging.Aps(
@@ -1852,18 +1899,23 @@ def get_one_convocation(
         raise HTTPException(status_code=404, detail="Match non trouvé")
     return doc.to_dict()
 
+
 @app.get("/notifications/synchroniser")
 def synchroniser_notifications(
     nom_parent: Optional[str] = Header(
         None,
         alias="nom_parent"
+    ),
+    id_installation: Optional[str] = Header(
+        None,
+        alias="id_installation"
     )
 ):
     check_db()
     nom = str(nom_parent or "").strip()
     if not nom:
-        raise HTTPException(status_code=400, detail="Nom utilisateur manquant")
-    # Même convention d'identifiant que /users/register
+        raise HTTPException(status_code=400,detail="Nom utilisateur manquant")
+                                                        
     id_utilisateur = nom.replace(" ", "_").lower()
     try:
         notifications = []
@@ -1874,27 +1926,35 @@ def synchroniser_notifications(
         # 1. Choisir les sources
         # --------------------------------------------------
         if utilisateur_enregistre:
-            # Les notifications personnelles et les copies
-            # générales doivent être dans cette sous-collection.
+            # Utilisateur enregistré :
+            # conserver le fonctionnement personnel existant.
             sources = [("personnelle", user_ref)]
             date_vidage = None
         else:
-            # Utilisateur non enregistré : notifications générales
-            # partagées, filtrées avec son marqueur individuel.
-            general_ref = users_ref.document("notification_generale")
-            sources = [("generale", general_ref)]
-
-            marqueur_ref = (
-                db.collection("notifications_vidage")
-                .document(id_utilisateur)
-            )
+            # Visiteur anonyme :
+            # utiliser les notifications générales.
+            sources = [
+                (
+                    "generale",
+                    users_ref.document("notification_generale")
+                )
+            ]
+            # Identifiant propre à cette installation.
+            identifiant = str(id_installation or "").strip()
+            if not identifiant:
+                raise HTTPException(status_code=400, detail="Identifiant installation manquant")
+            # Le marqueur est propre à chaque téléphone.
+            marqueur_ref = (db.collection("notifications_vidage") .document(identifiant))
+                                                     
+                                         
+             
             marqueur = marqueur_ref.get()
             date_vidage = None
             if marqueur.exists:
                 date_vidage = (
                     marqueur.to_dict() or {}
                 ).get("date_vidage")
-                # Normaliser la date du marqueur en datetime UTC.
+                                                                 
                 if isinstance(date_vidage, str):
                     try:
                         date_vidage = datetime.fromisoformat(
@@ -1908,9 +1968,9 @@ def synchroniser_notifications(
                             tzinfo=timezone.utc
                         )
                     else:
-                        date_vidage = date_vidage.astimezone(
-                            timezone.utc
-                        )
+                        date_vidage = date_vidage.astimezone(timezone.utc)
+                                        
+                         
                 else:
                     date_vidage = None
         # --------------------------------------------------
@@ -1919,17 +1979,19 @@ def synchroniser_notifications(
         for source_defaut, source_user_ref in sources:
             if not source_user_ref.get().exists:
                 continue
-            docs = source_user_ref.collection("notifications").stream()
+            docs = source_user_ref.collection(
+                "notifications"
+            ).stream()
             for doc in docs:
                 data = doc.to_dict() or {}
                 date_originale = data.get("date")
-                # Pour les utilisateurs non enregistrés,
-                # masquer les notifications générales antérieures
-                # ou égales au dernier vidage.
+                # Filtrage du marqueur pour les visiteurs anonymes.
+                                                                    
+                                               
                 if not utilisateur_enregistre and date_vidage:
                     if not isinstance(date_originale, datetime):
-                        # Une date absente ou invalide ne doit pas
-                        # faire réapparaître une ancienne notification.
+                                                                  
+                                                                         
                         continue
                     date_comparable = date_originale
                     if date_comparable.tzinfo is None:
@@ -1937,11 +1999,12 @@ def synchroniser_notifications(
                             tzinfo=timezone.utc
                         )
                     else:
-                        date_comparable = date_comparable.astimezone(
-                            timezone.utc
-                        )
+                        date_comparable = date_comparable.astimezone(timezone.utc)
+                                        
+                         
                     if date_comparable <= date_vidage:
                         continue
+                # Préparer la date.
                 if isinstance(date_originale, datetime):
                     date_iso = date_originale.isoformat()
                     date_tri = date_originale
@@ -1959,9 +2022,9 @@ def synchroniser_notifications(
                     )
                     date_tri = None
                 source = str(data.get("source") or source_defaut)
-                source_id = str(
-                    data.get("source_id") or f"{source}:{doc.id}"
-                )
+                                
+                source_id = str( data.get("source_id") or f"{source}:{doc.id}")
+                 
                 notifications.append({
                     "source_id": source_id,
                     "source": source,
@@ -1980,7 +2043,9 @@ def synchroniser_notifications(
                     "lue": bool(data.get("lue", False)),
                     "_date_tri": date_tri
                 })
-        # Plus récentes en premier ; dates absentes en dernier.
+        # --------------------------------------------------
+        # 3. Trier les notifications
+        # --------------------------------------------------
         notifications.sort(
             key=lambda n: (
                 n["_date_tri"] is not None,
@@ -1990,7 +2055,7 @@ def synchroniser_notifications(
             ),
             reverse=True
         )
-        # Ne pas exposer le champ interne utilisé pour le tri.
+                                                               
         for notification in notifications:
             notification.pop("_date_tri", None)
         return {"notifications": notifications}
@@ -1998,31 +2063,39 @@ def synchroniser_notifications(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[NOTIFICATIONS API] Erreur de synchronisation : {e}")
+        print(f"[NOTIFICATIONS API] Erreur de synchronisation : {e}" )
         raise HTTPException(status_code=500,detail="Impossible de synchroniser les notifications")
+
 
 @app.delete("/notifications/vider")
 def vider_notifications_utilisateur(
     nom_parent: Optional[str] = Header(
         None,
         alias="nom_parent"
+    ),
+    id_installation: Optional[str] = Header(
+        None,
+        alias="id_installation"
     )
 ):
     check_db()
     nom = str(nom_parent or "").strip()
     if not nom:
-        raise HTTPException( status_code=400, detail="Nom utilisateur manquant" )
+        raise HTTPException(status_code=400,detail="Nom utilisateur manquant")
     id_utilisateur = nom.replace(" ", "_").lower()
     try:
         users_ref = db.collection("users")
         user_ref = users_ref.document(id_utilisateur)
         utilisateur_enregistre = user_ref.get().exists
+        # --------------------------------------------------
+        # 1. Utilisateur enregistré
+        # --------------------------------------------------
         if utilisateur_enregistre:
-            # Supprimer uniquement les notifications de cet utilisateur.
+            # Garder le comportement existant.
             notifications_ref = user_ref.collection("notifications")
             total_supprime = 0
             while True:
-                docs = list(notifications_ref.limit(400).stream())
+                docs = list( notifications_ref.limit(400).stream() )
                 if not docs:
                     break
                 batch = db.batch()
@@ -2030,7 +2103,7 @@ def vider_notifications_utilisateur(
                     batch.delete(doc.reference)
                 batch.commit()
                 total_supprime += len(docs)
-            # Le badge concerne les notifications personnelles importantes.
+                                                                           
             user_ref.set(
                 {"notifications_non_lues": 0},
                 merge=True
@@ -2042,10 +2115,16 @@ def vider_notifications_utilisateur(
                 "badge": 0,
                 "generales_supprimees": False
             }
-        # Utilisateur non enregistré :
-        # ne pas supprimer la collection générale partagée.
+        # --------------------------------------------------
+        # 2. Visiteur anonyme
+        # --------------------------------------------------
+        identifiant = str(id_installation or "").strip()
+        if not identifiant:
+            raise HTTPException(status_code=400,detail="Identifiant installation manquant")
+        # Ne jamais supprimer la collection générale.
+        # Enregistrer un marqueur uniquement pour ce téléphone.
         db.collection("notifications_vidage").document(
-            id_utilisateur
+            identifiant
         ).set(
             {
                 "date_vidage": datetime.now(timezone.utc),
@@ -2054,7 +2133,7 @@ def vider_notifications_utilisateur(
         )
         return {
             "success": True,
-            "message": "Notifications générales masquées pour cet utilisateur",
+            "message": "Notifications générales masquées sur cette installation",
             "notifications_supprimees": 0,
             "badge": 0,
             "generales_supprimees": False
@@ -2062,8 +2141,9 @@ def vider_notifications_utilisateur(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[NOTIFICATIONS API] Erreur lors du vidage : {e}")
+        print(f"[NOTIFICATIONS API] Erreur lors du vidage : {e}" )
         raise HTTPException(status_code=500,detail="Impossible de vider les notifications")
+
 # ============================================================
 # ============================================================
 # AJOUT METHODE POUR INCREMENTER DECREMENTER BADGE IOS
@@ -2346,6 +2426,13 @@ def envoyer_notif_convocation_utilisateur_avec_badge(id_utilisateur: str,titre: 
             id_utilisateur=id_utilisateur, titre=titre, corps=corps,
             categorie=categorie, notif_type="convocation", match_id=match_id
         )
+		source_id = str(source_id or "").strip()
+		if not source_id:
+		    print(
+                f"[FCM CONVOCATION] source_id manquant "
+                f"pour {id_utilisateur}."
+            )
+            return False
         if badge_count <= 0:
             print(f"[FCM CONVOCATION] Impossible de créer la notification pour {id_utilisateur}")
             return False
@@ -2356,7 +2443,7 @@ def envoyer_notif_convocation_utilisateur_avec_badge(id_utilisateur: str,titre: 
         total_envoyes = 0
         for token in tokens:
             try:
-                if envoyer_notif_convocation_token(fcm_token=token, titre=titre, corps=corps, categorie=categorie, match_id=match_id, badge_count=badge_count):
+                if envoyer_notif_convocation_token(fcm_token=token, titre=titre, corps=corps, categorie=categorie, match_id=match_id,source_id=source_id, badge_count=badge_count):
                     total_envoyes += 1
             except Exception as e:
                 print(f"[FCM CONVOCATION TOKEN ERROR] utilisateur={id_utilisateur} | token={token[:12]}... | {e}")
