@@ -767,8 +767,8 @@ def envoyer_notif_push_token(
         )
         return False
     try:
-	    source_id = str(source_id).strip() if source_id else None
-		if not source_id:
+        source_id = str(source_id).strip() if source_id else None
+        if not source_id:
             print(
                 "[FCM TOKEN] source_id manquant -> "
                 "notification non envoyee."
