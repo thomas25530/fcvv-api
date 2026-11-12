@@ -41,6 +41,8 @@ def check_db():
             status_code=500, detail="Base de données Firebase non disponible"
         )
 
+TOPICS_GLOBAUX = {"TournoiVercel", "Benevole","Generale",}
+
 ##########################
 ######## GESTION EMAIL & AUTHENTIFICATION
 
@@ -607,14 +609,14 @@ def envoyer_notif_push(topic: str,titre: str,corps: str,notif_type: str = "home"
     notif_type = str(notif_type or "home")
     # Identifiant unique de la notification
     notification_id = uuid.uuid4().hex
-    source_id = f"generale:{notification_id}" if topic == "TournoiVercel" else f"topic:{topic}:{notification_id}"
+    source_id = (f"generale:{notification_id}" if topic in TOPICS_GLOBAUX else f"topic:{topic}:{notification_id}")
     if len(source_id.encode("utf-8")) > 64:
         print("[FCM ERROR] source_id dépasse la limite APNs de 64 octets.")
         return
     # --------------------------------------------------
     # 1. Enregistrer les notifications générales
     # --------------------------------------------------
-    if topic == "TournoiVercel":
+    if topic in TOPICS_GLOBAUX:
         try:
             check_db()
                                              
@@ -2269,12 +2271,12 @@ def envoyer_notif_categorie_avec_badge(categorie: str,titre: str,corps: str,noti
         print("[FCM CATEGORIE] Catégorie vide.")
         return False
     # ============================================================
-    # TOURNOIVERCEL
+    # TOPICS GLOBAUX
     # ============================================================
-    if categorie == "TournoiVercel":
+    if categorie in TOPICS_GLOBAUX:
         try:
             envoyer_notif_push(
-                topic="TournoiVercel",
+                topic=categorie,
                 titre=titre,
                 corps=corps,
                 notif_type=notif_type,
@@ -2282,12 +2284,12 @@ def envoyer_notif_categorie_avec_badge(categorie: str,titre: str,corps: str,noti
                 sender=exclure_utilisateur
             )
             print(
-                "[FCM TOURNOIVERCEL] "
-                "Notification envoyée sur le topic global."
+                "[FCM GLOBAL] "
+                f"Notification envoyée sur le topic {categorie}"
             )
             return True
         except Exception as e:
-            print(f"[FCM TOURNOIVERCEL ERROR] {e}")
+            print(f"[FCM GLOBAL ERROR] {e}")
             return False
 
     # ============================================================
