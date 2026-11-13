@@ -1172,25 +1172,39 @@ def get_benevoles_messages():
         raise HTTPException(status_code=500,detail=str(e))
 
 @app.post("/benevoles/messages")
-def poster_benevole_message(message: BenevoleMessage):
+def poster_benevole_message(message: BenevoleMessage, background_tasks: BackgroundTasks):
     check_db()
     prenom = message.prenom.strip().title()
     contenu = message.contenu.strip()
     if not prenom:
-        raise HTTPException(status_code=400,detail="Prénom manquant")
+        raise HTTPException(status_code=400, detail="Prénom manquant")
     if not contenu:
-        raise HTTPException(status_code=400,detail="Message vide")
+        raise HTTPException(status_code=400, detail="Message vide")
     try:
-        db.collection( "benevoles_messages").add({"prenom": prenom,"contenu": contenu,"timestamp": firestore.SERVER_TIMESTAMP,})
-        messages = list(db.collection("benevoles_messages").order_by( "timestamp", direction=firestore.Query.ASCENDING).stream())
+        db.collection("benevoles_messages").add({
+            "prenom": prenom,
+            "contenu": contenu,
+            "timestamp": firestore.SERVER_TIMESTAMP,
+        })
+        messages = list(db.collection("benevoles_messages").order_by("timestamp", direction=firestore.Query.ASCENDING).stream())
         if len(messages) > 200:
             surplus = (len(messages) - 200)
             for doc in messages[:surplus]:
                 doc.reference.delete()
-        return { "status": "success", "message": "Message envoyé"}
+        # --- Ajout de la notification en background ---
+        background_tasks.add_task(
+            envoyer_notif_categorie_avec_badge,
+            categorie="Benevole",
+            titre="Tournoi de Vercel - Bénévole - Nouveau message",
+            corps=f"{prenom}: {contenu}",
+            notif_type="chat",
+            exclure_utilisateur=prenom,
+        )
+        # ---------------------------------------------
+        return {"status": "success", "message": "Message envoyé"}
     except Exception as e:
         print(f"[ERREUR BENEVOLES POST] {e}")
-        raise HTTPException(status_code=500,detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/benevoles/messages/{message_id}")
 def delete_benevole_message(
