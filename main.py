@@ -561,6 +561,10 @@ class Message(BaseModel):
 class EchangeMessage(BaseModel):
     contenu: str
 
+class BenevoleMessage(BaseModel):
+    prenom: str
+    contenu: str
+
 class SondageModel(BaseModel):
     titre: str
     date: str
@@ -1143,6 +1147,78 @@ def get_echange_messages(categorie: str, nom_parent: Optional[str] = Header(None
 
 ##########################
 ######## MESSAGERIE & CHAT
+@app.get("/benevoles/messages")
+def get_benevoles_messages():
+    check_db()
+    try:
+        docs = ( db.collection("benevoles_messages") .order_by( "timestamp", direction=firestore.Query.ASCENDING ).limit(200) .stream())
+        results = []
+        for doc in docs:
+            data = doc.to_dict()
+            ts = data.get("timestamp")
+            results.append( {"id": doc.id,"prenom": data.get("prenom", ""),"contenu": data.get("contenu", ""),
+                    "timestamp": (
+                        ts.isoformat()
+                        if ts and hasattr(ts, "isoformat")
+                        else datetime.now(
+                            timezone.utc
+                        ).isoformat()
+                    )
+                }
+            )
+        return results
+    except Exception as e:
+        print( f"[ERREUR BENEVOLES GET] {e}")
+        raise HTTPException(status_code=500,detail=str(e))
+
+@app.post("/benevoles/messages")
+def poster_benevole_message(message: BenevoleMessage):
+    check_db()
+    prenom = message.prenom.strip().title()
+    contenu = message.contenu.strip()
+    if not prenom:
+        raise HTTPException(status_code=400,detail="Prénom manquant")
+    if not contenu:
+        raise HTTPException(status_code=400,detail="Message vide")
+    try:
+        db.collection( "benevoles_messages").add({"prenom": prenom,"contenu": contenu,"timestamp": firestore.SERVER_TIMESTAMP,})
+        messages = list(db.collection("benevoles_messages").order_by( "timestamp", direction=firestore.Query.ASCENDING).stream())
+        if len(messages) > 200:
+            surplus = (len(messages) - 200)
+            for doc in messages[:surplus]:
+                doc.reference.delete()
+        return { "status": "success", "message": "Message envoyé"}
+    except Exception as e:
+        print(f"[ERREUR BENEVOLES POST] {e}")
+        raise HTTPException(status_code=500,detail=str(e))
+
+@app.delete("/benevoles/messages/{message_id}")
+def delete_benevole_message(
+    message_id: str,
+    prenom: Optional[str] = Header(
+        None,
+        alias="prenom"
+    )
+):
+    check_db()
+    prenom = (prenom or "").strip().title()
+    if not prenom:
+        raise HTTPException(status_code=400, detail="Prénom manquant")
+    try:
+        ref = (db.collection("benevoles_messages").document(message_id))
+        doc = ref.get()
+        if not doc.exists:
+            raise HTTPException(status_code=404, detail="Message non trouvé")
+        auteur = (doc.to_dict() .get("prenom", "").strip().title())
+        if auteur != prenom:
+            raise HTTPException(status_code=403,detail=( "Vous ne pouvez supprimer que vos propres messages"))
+        ref.delete()
+        return {"status": "deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print( f"[ERREUR BENEVOLES DELETE] {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat/{categorie}")
 def poster_message(
